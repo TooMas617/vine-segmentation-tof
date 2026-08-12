@@ -1,0 +1,9 @@
+# Dati (immagini raw, processate, augmented - troppo pesanti per Git)
+data/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Checkpoint di Jupyter/Colab
+.ipynb_checkpoints/
