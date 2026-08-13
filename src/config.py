@@ -15,6 +15,7 @@ Typical usage inside a notebook:
     config.create_project_structure()
 """
 
+import importlib
 import json
 import os
 import random
@@ -56,12 +57,28 @@ BASE_PATH: Path = Path(
 DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _library_version(module_name: str) -> str:
+    """Return the version of a library without failing if it is missing.
+
+    Optional dependencies are reported rather than raising, so a notebook that
+    does not need them can still print the environment summary.
+
+    Args:
+        module_name: Importable name of the library.
+
+    Returns:
+        The version string, or "not installed".
+    """
+    try:
+        return importlib.import_module(module_name).__version__
+    except ImportError:
+        return "not installed"
+
+
 def print_environment_info() -> None:
     """Print platform, device and library versions for reproducibility."""
-    import albumentations as A
-    import cv2
-
     separator = "=" * 70
+
     print(separator)
     print("ENVIRONMENT INFO")
     print(separator)
@@ -77,9 +94,11 @@ def print_environment_info() -> None:
 
     print(separator)
     print(f"PyTorch:        {torch.__version__}")
-    print(f"OpenCV:         {cv2.__version__}")
-    print(f"Albumentations: {A.__version__}")
     print(f"NumPy:          {np.__version__}")
+    # Optional dependencies: OpenCV is needed from notebook 01 on, albumentations
+    # only for the online augmentation used during training.
+    print(f"OpenCV:         {_library_version('cv2')}")
+    print(f"Albumentations: {_library_version('albumentations')}")
     print(separator)
 
 
