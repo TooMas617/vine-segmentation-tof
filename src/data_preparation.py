@@ -7,6 +7,8 @@ for training:
     * binary label maps      -> cordon (1) against everything else (0)
     * skeleton maps          -> dilated centrelines of the elongated classes
     * colored masks          -> RGB versions of the above, for visual checks
+    * train/val/test splits  -> a single JSON file shared by all notebooks
+    * augmented dataset      -> flipped copies of the training samples
 
 All the settings describing how annotations map onto classes (aliases,
 ignored labels, drawing priority, linestrip handling) live in config.py.
@@ -14,14 +16,23 @@ This module only implements the logic.
 
 Typical usage from notebook 01:
 
-    from data_preparation import generate_label_maps, generate_skeleton_maps
+    from data_preparation import (
+        generate_label_maps,
+        generate_skeleton_maps,
+        create_splits,
+        build_augmented_dataset,
+    )
 
     generate_label_maps(overwrite=False)
     generate_skeleton_maps(overwrite=False)
+    splits = create_splits(overwrite=False)
+    build_augmented_dataset(overwrite=False)
 """
 
+import hashlib
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -29,6 +40,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from skimage.morphology import skeletonize
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 import config
@@ -859,4 +871,543 @@ def generate_skeleton_maps(
     print(f"  Skeleton maps:    {skeleton_dir}")
     if save_colored:
         print(f"  Colored overlays: {colored_skeleton_dir}")
+    print(separator)
+
+
+# =====================================================
+# 5 - TRAIN / VAL / TEST SPLIT
+# =====================================================
+
+# Every notebook reads the split from this single file, so training,
+# evaluation and EDA are guaranteed to work on the same partition.
+SPLITS_FILENAME = "splits.json"
+SPLIT_NAMES = ("train", "val", "test")
+
+
+def get_splits_path() -> Path:
+    """Return the path of the JSON file holding the dataset split.
+
+    Returns:
+        Path to data/splits/splits.json.
+    """
+    return config.PATHS["splits"] / SPLITS_FILENAME
+
+
+def _compute_splits_hash(splits: Dict[str, List[str]]) -> str:
+    """Compute a short fingerprint of a split.
+
+    Two splits with the same fingerprint contain exactly the same files in the
+    same partitions, which makes it easy to tell whether two runs were trained
+    on identical data.
+
+    Args:
+        splits: Mapping from split name to the list of file stems it contains.
+
+    Returns:
+        First 8 hexadecimal characters of the MD5 digest.
+    """
+    canonical = json.dumps(splits, sort_keys=True).encode("utf-8")
+    return hashlib.md5(canonical).hexdigest()[:8]
+
+
+def create_splits(
+    overwrite: bool = False,
+    train_ratio: float = config.TRAIN_RATIO,
+    val_ratio: float = config.VAL_RATIO,
+    seed: int = config.RANDOM_SEED,
+) -> Dict[str, List[str]]:
+    """Partition the dataset into train, validation and test sets.
+
+    The split is computed on the original file stems, before any augmentation,
+    so that the augmented copies of one image can never end up in two different
+    partitions. The result is written to data/splits/splits.json and reloaded by
+    every other notebook.
+
+    Note:
+        Files are assigned independently of each other. If the dataset contains
+        sequences of consecutive frames of the same vine, near-duplicate images
+        may land in different partitions and inflate the test metrics; a
+        group-aware split would be needed in that case.
+
+    Args:
+        overwrite: If True, recompute the split even if the file already exists.
+        train_ratio: Fraction of the dataset used for training.
+        val_ratio: Fraction used for validation. The test fraction is whatever
+            is left.
+        seed: Random seed, so the partition is reproducible.
+
+    Returns:
+        Mapping from split name to the sorted list of file stems.
+
+    Raises:
+        FileNotFoundError: If the label maps have not been generated yet.
+        ValueError: If the ratios are invalid or the dataset is too small to
+            fill all three partitions.
+    """
+    splits_path = get_splits_path()
+
+    if splits_path.exists() and not overwrite:
+        splits = load_splits()
+        print("[OK] Existing split loaded — call create_splits(overwrite=True) to rebuild it.")
+        _print_splits_summary(splits, seed=seed)
+        return splits
+
+    test_ratio = round(1.0 - train_ratio - val_ratio, 10)
+
+    if not (0 < train_ratio < 1 and 0 < val_ratio < 1 and test_ratio > 0):
+        raise ValueError(
+            f"Invalid split ratios: train={train_ratio}, val={val_ratio}, "
+            f"test={test_ratio}. All three must be positive and sum to 1."
+        )
+
+    labels_dir = config.PATHS["processed"]["labels_multi"]
+
+    if not labels_dir.exists() or not any(labels_dir.iterdir()):
+        raise FileNotFoundError(
+            f"No label maps found in {labels_dir}. Run generate_label_maps() first."
+        )
+
+    # Sorted, so the split depends only on the seed and not on the order the
+    # filesystem happens to return.
+    all_stems = sorted(path.stem for path in labels_dir.glob("*.png"))
+
+    minimum_samples = len(SPLIT_NAMES)
+    if len(all_stems) < minimum_samples:
+        raise ValueError(
+            f"Only {len(all_stems)} sample(s) available: at least "
+            f"{minimum_samples} are needed to fill train, val and test."
+        )
+
+    # Split in two steps: first train against the rest, then the rest into
+    # validation and test using the ratio between the two.
+    train_stems, holdout_stems = train_test_split(
+        all_stems,
+        train_size=train_ratio,
+        random_state=seed,
+        shuffle=True,
+    )
+
+    relative_val_ratio = val_ratio / (val_ratio + test_ratio)
+    val_stems, test_stems = train_test_split(
+        holdout_stems,
+        train_size=relative_val_ratio,
+        random_state=seed,
+        shuffle=True,
+    )
+
+    splits = {
+        "train": sorted(train_stems),
+        "val": sorted(val_stems),
+        "test": sorted(test_stems),
+    }
+
+    _validate_splits(splits, expected_total=len(all_stems))
+    _save_splits(splits, train_ratio, val_ratio, test_ratio, seed)
+    _print_splits_summary(splits, seed=seed)
+
+    return splits
+
+
+def _validate_splits(splits: Dict[str, List[str]], expected_total: int) -> None:
+    """Check that a split is complete and free of leakage.
+
+    Args:
+        splits: Mapping from split name to the list of file stems.
+        expected_total: Number of samples the three partitions must add up to.
+
+    Raises:
+        ValueError: If a partition is empty, a stem appears in more than one
+            partition, or samples were lost along the way.
+    """
+    empty_splits = [name for name in SPLIT_NAMES if not splits[name]]
+    if empty_splits:
+        raise ValueError(
+            f"Empty partition(s): {empty_splits}. The dataset is too small for "
+            "the requested ratios."
+        )
+
+    stem_sets = {name: set(splits[name]) for name in SPLIT_NAMES}
+
+    for first, second in (("train", "val"), ("train", "test"), ("val", "test")):
+        shared = stem_sets[first] & stem_sets[second]
+        if shared:
+            raise ValueError(
+                f"Data leakage: {len(shared)} stem(s) appear in both "
+                f"'{first}' and '{second}', e.g. {sorted(shared)[:3]}"
+            )
+
+    actual_total = sum(len(splits[name]) for name in SPLIT_NAMES)
+    if actual_total != expected_total:
+        raise ValueError(
+            f"Split covers {actual_total} samples but {expected_total} were available."
+        )
+
+
+def _save_splits(
+    splits: Dict[str, List[str]],
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    seed: int,
+) -> None:
+    """Write the split to disk together with the metadata needed to audit it.
+
+    Args:
+        splits: Mapping from split name to the list of file stems.
+        train_ratio: Fraction requested for training.
+        val_ratio: Fraction requested for validation.
+        test_ratio: Fraction left for testing.
+        seed: Random seed used to produce the split.
+    """
+    splits_path = get_splits_path()
+    splits_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "metadata": {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "splits_hash": _compute_splits_hash(splits),
+            "random_seed": seed,
+            "train_ratio": train_ratio,
+            "val_ratio": val_ratio,
+            "test_ratio": test_ratio,
+            "total_samples": sum(len(stems) for stems in splits.values()),
+            "split_counts": {name: len(stems) for name, stems in splits.items()},
+        },
+        "splits": splits,
+    }
+
+    with open(splits_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2)
+
+
+def load_splits() -> Dict[str, List[str]]:
+    """Load the dataset split shared by all notebooks.
+
+    Returns:
+        Mapping from split name to the sorted list of file stems.
+
+    Raises:
+        FileNotFoundError: If the split has not been created yet.
+        ValueError: If the file is missing one of the three partitions.
+    """
+    splits_path = get_splits_path()
+
+    if not splits_path.exists():
+        raise FileNotFoundError(
+            f"Split file not found: {splits_path}. "
+            "Run create_splits() in notebook 01 first."
+        )
+
+    with open(splits_path, "r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    splits = payload["splits"]
+    missing = [name for name in SPLIT_NAMES if name not in splits]
+
+    if missing:
+        raise ValueError(f"Split file {splits_path} is missing partition(s): {missing}")
+
+    return {name: splits[name] for name in SPLIT_NAMES}
+
+
+def _print_splits_summary(splits: Dict[str, List[str]], seed: int) -> None:
+    """Print the size of each partition.
+
+    Args:
+        splits: Mapping from split name to the list of file stems.
+        seed: Random seed used to produce the split.
+    """
+    total = sum(len(stems) for stems in splits.values())
+
+    separator = "=" * 70
+    print(separator)
+    print("DATASET SPLIT")
+    print(separator)
+    print(f"Total samples: {total}")
+
+    for name in SPLIT_NAMES:
+        count = len(splits[name])
+        percentage = 100 * count / total if total else 0
+        print(f"  {name:<6} {count:>5} ({percentage:>5.1f}%)")
+
+    print(f"Random seed:   {seed}")
+    print(f"Splits hash:   {_compute_splits_hash(splits)}")
+    print(f"Saved to:      {get_splits_path()}")
+    print(separator)
+
+
+# =====================================================
+# 6 - OFFLINE AUGMENTATION
+# =====================================================
+
+# Augmentation name -> (filename suffix, OpenCV flip code).
+# Flip codes: 1 mirrors along the vertical axis (left-right), 0 along the
+# horizontal axis (up-down), -1 does both.
+FLIP_MAPPING: Dict[str, Tuple[str, int]] = {
+    "flipH": ("_flipH", 1),
+    "flipV": ("_flipV", 0),
+    "flipHV": ("_flipHV", -1),
+}
+
+# Every image kind copied into the augmented dataset. Raw modalities come from
+# data/raw, the rest from data/processed. All of them are always processed,
+# regardless of which modalities the current model consumes: the augmented
+# dataset describes the data, not the experiment, so flipping USE_CONFIDENCE in
+# config.py must never silently produce an incomplete dataset.
+RAW_MODALITIES: Tuple[str, ...] = ("intensity", "depth", "confidence")
+PROCESSED_MODALITIES: Tuple[str, ...] = ("labels_multi", "labels_binary", "skeleton")
+
+# These hold class indices, so they must be read as single-channel images and
+# never interpolated or converted.
+LABEL_MODALITIES: Tuple[str, ...] = ("labels_multi", "labels_binary", "skeleton")
+
+
+def get_source_dirs() -> Dict[str, Path]:
+    """Return the source folder of every image kind copied into the dataset.
+
+    Returns:
+        Mapping from modality name to the folder holding its original images.
+    """
+    source_dirs = {name: config.PATHS["raw"][name] for name in RAW_MODALITIES}
+    source_dirs.update(
+        {name: config.PATHS["processed"][name] for name in PROCESSED_MODALITIES}
+    )
+    return source_dirs
+
+
+def _read_image(path: Path, is_label: bool) -> np.ndarray:
+    """Read an image, preserving whatever the file actually contains.
+
+    Args:
+        path: Path to the image file.
+        is_label: True for label maps, which must stay single-channel.
+
+    Returns:
+        The image as a NumPy array.
+
+    Raises:
+        ValueError: If the file cannot be decoded.
+    """
+    # IMREAD_UNCHANGED keeps the original bit depth and channel count. Plain
+    # imread() would silently downcast 16-bit ToF data to 8-bit BGR.
+    flag = cv2.IMREAD_GRAYSCALE if is_label else cv2.IMREAD_UNCHANGED
+    image = cv2.imread(str(path), flag)
+
+    if image is None:
+        raise ValueError(f"Could not decode image: {path}")
+
+    return image
+
+
+def _check_source_files(
+    splits: Dict[str, List[str]],
+    source_dirs: Dict[str, Path],
+) -> None:
+    """Verify that every file needed by the augmentation exists.
+
+    Checking upfront means a missing file stops the run before anything has
+    been written, instead of leaving the output folders half filled.
+
+    Args:
+        splits: Mapping from split name to the list of file stems.
+        source_dirs: Mapping returned by get_source_dirs().
+
+    Raises:
+        FileNotFoundError: If any expected file is missing.
+    """
+    missing: List[str] = []
+
+    for stems in splits.values():
+        for stem in stems:
+            for modality, directory in source_dirs.items():
+                if not (directory / f"{stem}.png").exists():
+                    missing.append(f"{modality}/{stem}.png")
+
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)} source file(s) missing, e.g. {missing[:5]}. "
+            "Make sure the raw modalities are in place and that "
+            "generate_label_maps() and generate_skeleton_maps() have been run."
+        )
+
+
+def build_augmented_dataset(
+    overwrite: bool = False,
+    augmentations: Optional[Sequence[str]] = None,
+) -> None:
+    """Materialise the train, val and test folders used for training.
+
+    Training samples are written together with a flipped copy per requested
+    augmentation; validation and test samples are copied unchanged, so the
+    three folders have the same layout and the Dataset class can treat them
+    identically.
+
+    Every modality receives exactly the same geometric transformation, which
+    keeps images and label maps aligned. Flips are applied offline rather than
+    in the training loop because reading from Drive is the bottleneck, and a
+    fixed augmented set also makes runs directly comparable.
+
+    Args:
+        overwrite: If True, existing output folders are emptied and rebuilt.
+            If False and they already contain files, the step is skipped.
+        augmentations: Names of the flips to apply, from FLIP_MAPPING.
+            Defaults to config.OFFLINE_AUGMENTATIONS. Pass an empty list to
+            copy the originals without augmenting.
+
+    Raises:
+        FileNotFoundError: If the split or any source file is missing.
+        ValueError: If an unknown augmentation name is requested.
+    """
+    if augmentations is None:
+        augmentations = config.OFFLINE_AUGMENTATIONS
+
+    unknown = [name for name in augmentations if name not in FLIP_MAPPING]
+    if unknown:
+        raise ValueError(
+            f"Unknown augmentation(s): {unknown}. "
+            f"Available: {sorted(FLIP_MAPPING)}"
+        )
+
+    flips = [FLIP_MAPPING[name] for name in augmentations]
+
+    splits = load_splits()
+    source_dirs = get_source_dirs()
+    modalities = list(source_dirs)
+
+    output_dirs = {
+        split_name: {name: config.PATHS["augmented"][split_name][name] for name in modalities}
+        for split_name in SPLIT_NAMES
+    }
+
+    all_output_dirs = [
+        directory for split_dirs in output_dirs.values() for directory in split_dirs.values()
+    ]
+    already_built = all(
+        directory.exists() and any(directory.iterdir()) for directory in all_output_dirs
+    )
+
+    if already_built and not overwrite:
+        print("[OK] Augmented dataset already exists — skipping.")
+        print("     Call build_augmented_dataset(overwrite=True) to rebuild it.")
+        return
+
+    _check_source_files(splits, source_dirs)
+
+    separator = "=" * 70
+    print(separator)
+    print("OFFLINE AUGMENTATION")
+    print(separator)
+    print(f"Modalities:    {modalities}")
+    print(f"Augmentations: {list(augmentations) if augmentations else 'none (originals only)'}")
+    print(f"Train:         {len(splits['train'])} -> {len(splits['train']) * (1 + len(flips))}")
+    print(f"Val:           {len(splits['val'])} (copied unchanged)")
+    print(f"Test:          {len(splits['test'])} (copied unchanged)")
+    print(f"Overwrite:     {overwrite}")
+    print(separator)
+
+    for split_dirs in output_dirs.values():
+        for directory in split_dirs.values():
+            _prepare_output_dir(directory, overwrite)
+
+    for split_name in SPLIT_NAMES:
+        _write_split(
+            split_name=split_name,
+            stems=splits[split_name],
+            source_dirs=source_dirs,
+            target_dirs=output_dirs[split_name],
+            flips=flips if split_name == "train" else [],
+        )
+
+    _report_augmented_counts(splits, output_dirs, modalities, n_flips=len(flips))
+
+
+def _write_split(
+    split_name: str,
+    stems: List[str],
+    source_dirs: Dict[str, Path],
+    target_dirs: Dict[str, Path],
+    flips: List[Tuple[str, int]],
+) -> None:
+    """Write one split of the augmented dataset.
+
+    Args:
+        split_name: Name of the split, used in the progress bar.
+        stems: File stems belonging to the split.
+        source_dirs: Mapping returned by get_source_dirs().
+        target_dirs: Destination folder per modality.
+        flips: Flips to apply. Empty means the originals are copied as they are.
+    """
+    description = f"Writing {split_name}"
+
+    for stem in tqdm(stems, desc=description):
+        filename = f"{stem}.png"
+
+        if not flips:
+            # copy2 preserves the file byte for byte, which avoids a pointless
+            # decode/encode round trip for the untouched splits.
+            for modality, directory in source_dirs.items():
+                shutil.copy2(directory / filename, target_dirs[modality] / filename)
+            continue
+
+        for modality, directory in source_dirs.items():
+            image = _read_image(directory / filename, is_label=modality in LABEL_MODALITIES)
+            cv2.imwrite(str(target_dirs[modality] / filename), image)
+
+            for suffix, flip_code in flips:
+                flipped = cv2.flip(image, flip_code)
+                cv2.imwrite(str(target_dirs[modality] / f"{stem}{suffix}.png"), flipped)
+
+
+def _report_augmented_counts(
+    splits: Dict[str, List[str]],
+    output_dirs: Dict[str, Dict[str, Path]],
+    modalities: List[str],
+    n_flips: int,
+) -> None:
+    """Print how many files were written and flag any inconsistency.
+
+    A mismatch between modalities means images and labels are no longer paired,
+    which would corrupt training silently, so it is reported loudly.
+
+    Args:
+        splits: Mapping from split name to the list of file stems.
+        output_dirs: Destination folders, per split and modality.
+        modalities: Names of the processed modalities.
+        n_flips: Number of flips applied to the training split.
+    """
+    expected = {
+        "train": len(splits["train"]) * (1 + n_flips),
+        "val": len(splits["val"]),
+        "test": len(splits["test"]),
+    }
+
+    separator = "=" * 70
+    print(separator)
+    print("AUGMENTATION COMPLETED")
+    print(separator)
+
+    has_mismatch = False
+
+    for split_name in SPLIT_NAMES:
+        counts = {
+            modality: len(list(output_dirs[split_name][modality].glob("*.png")))
+            for modality in modalities
+        }
+        unique_counts = set(counts.values())
+        status = "OK" if unique_counts == {expected[split_name]} else "MISMATCH"
+
+        if status == "MISMATCH":
+            has_mismatch = True
+
+        print(f"  {split_name:<6} expected {expected[split_name]:>5}  [{status}]")
+
+        if status == "MISMATCH":
+            for modality, count in counts.items():
+                print(f"      {modality:<15} {count:>5}")
+
+    if has_mismatch:
+        print()
+        print("  WARNING: file counts differ from expected. Images and labels may")
+        print("           no longer be paired. Rerun with overwrite=True.")
+
     print(separator)
