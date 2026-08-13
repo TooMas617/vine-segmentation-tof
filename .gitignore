@@ -16,3 +16,6 @@ __pycache__/
 
 # Ambienti virtuali
 .venv/
+
+# Impostazioni locali dell'editor (percorsi specifici della macchina, tipo ambiente miniconda)
+.vscode/
