@@ -4,7 +4,8 @@ Documento di lavoro: registra **cosa fa** ogni fase della pipeline, **quali scel
 implementative** sono state prese e **perché**. Serve come base per il capitolo
 metodologico della tesi e come riferimento per chi riprenderà il codice.
 
-Ultimo aggiornamento: notebook `01_Data_Preparation` completato.
+Ultimo aggiornamento: notebook `01_Data_Preparation` completato ed eseguito
+sull'intero dataset (93 immagini) in ambiente locale.
 
 ---
 
@@ -115,6 +116,27 @@ spessore. Le altre classi sono annotate come poligoni e riempite.
 La dilatazione è applicata una classe alla volta e scritta **solo dove la maschera
 è ancora sfondo**, così non può mai sovrascrivere un'altra classe.
 
+### Annotazioni scartate
+
+L'esecuzione sull'intero dataset ha segnalato **4 forme scartate** su 93 file,
+tutte di classe `Cane` (`tralcio` e `tralcio_secco`), annotate come `polygon`
+con soli 2 punti:
+
+| File | Etichetta |
+|---|---|
+| `blaze1_20260321_160518` | `tralcio` |
+| `blaze1_20260321_162920` | `tralcio_secco` (×2) |
+| `blaze1_20260324_161940` | `tralcio` |
+
+Un poligono con due vertici non racchiude area e non può essere riempito.
+Si tratta con ogni probabilità di errori di annotazione (strumento poligono
+selezionato al posto di polilinea) oppure di tralci molto piccoli.
+
+*Decisione:* lasciarle scartate. L'incidenza è trascurabile (4 forme su 93
+immagini) e la segnalazione esplicita a schermo rende il fenomeno tracciabile.
+L'alternativa — interpretare i poligoni degeneri delle classi filiformi come
+polilinee — introdurrebbe una regola implicita a fronte di un beneficio minimo.
+
 ### Correzioni rispetto alla versione iniziale
 
 - Un errore nel nome di un parametro (`ignore_labels` invece di `ignored_labels`)
@@ -174,14 +196,46 @@ decisa a monte nella label map viene ereditata automaticamente.
 *Verifica.* Su dati sintetici di controllo: zero pixel di scheletro fuori dalla
 propria classe, zero pixel di scheletro del cordone in zona occlusa.
 
-### Parametro aperto
+### Dimensione del kernel di dilatazione — decisione motivata
 
-`dilation_kernel_size` era inizialmente 2, valore pari e quindi asimmetrico: la
-dilatazione non è centrata e sposta lo scheletro di mezzo pixel. È in corso il
-passaggio a 3. Da verificare visivamente che sul tralcio — struttura già sottile —
-il tubo non arrivi a coprire l'intero spessore della maschera: in tal caso lo
-scheletro cesserebbe di essere una linea centrale e il clDice perderebbe
-significato.
+`dilation_kernel_size` è mantenuto a **2**, nonostante sia un valore pari e
+quindi asimmetrico (la dilatazione non è centrata e sposta il tubo di mezzo
+pixel). La scelta è stata verificata quantitativamente sull'intero dataset.
+
+**Criterio adottato.** Si è misurata la *copertura*: la frazione della maschera
+di classe occupata dal tubo dello scheletro. Una copertura elevata indica che il
+tubo ha inghiottito l'intera struttura, per cui il clDice cessa di misurare la
+connettività della linea centrale e degenera in una misura di sovrapposizione di
+area — perdendo esattamente la proprietà per cui viene adottato.
+
+**Risultati sulla classe `Cane`** (93 immagini):
+
+| | kernel 2×2 | kernel 3×3 |
+|---|---|---|
+| copertura media | 34,4 % | 53,0 % |
+| copertura massima | 56,6 % | **83,7 %** |
+| immagini oltre l'80 % | **0** | 3 |
+
+**Motivazione.** Il confronto è tra due difetti di natura diversa. Il kernel 2
+introduce un'asimmetria geometrica di mezzo pixel, ma il tubo resta contenuto
+nella struttura (grazie al clamping) e la connettività della linea centrale è
+intatta, poiché deriva dall'algoritmo di thinning e non dalla dilatazione: è
+quindi un difetto che non tocca la proprietà topologica misurata. Il kernel 3
+comporta invece la degenerazione della metrica su 3 immagini. Il primo difetto è
+cosmetico, il secondo metodologico.
+
+**Osservazione sulle immagini critiche.** Le immagini con copertura più alta
+(stem `20105`, `20106`, `20109`, `20110` — consecutivi, quindi della stessa
+sessione di acquisizione) ritraggono **vigneto giovane**, con tralci
+sensibilmente più sottili. Il rischio di degenerazione non è quindi casuale ma
+legato a una sottopopolazione identificabile del dataset: se in futuro la quota
+di vigneto giovane aumentasse, la scelta del kernel andrebbe riconsiderata.
+
+**Alternativa non adottata.** Un elemento strutturante a croce 3×3
+(`cv2.MORPH_CROSS`) sarebbe centrato e simmetrico ma dilaterebbe solo nelle
+quattro direzioni ortogonali (area 5 contro 9 del quadrato, contro 4 del 2×2),
+collocandosi tra i due casi. Richiederebbe un parametro aggiuntivo in
+`config.py` per risolvere un problema che nei dati attuali non si manifesta.
 
 ---
 
@@ -216,16 +270,20 @@ automatico del leakage.
 
 Rapporti adottati: 70 % train, 15 % validation, 15 % test, seed 42.
 
-### Questione aperta — da risolvere prima dei risultati definitivi
+### Indipendenza dei campioni — verificata
 
-La suddivisione assegna i file in modo indipendente. **Se il dataset contiene
-sequenze di frame consecutivi acquisiti sulla stessa vite**, frame vicini sono
-quasi identici e uno split casuale colloca quasi-duplicati in partizioni diverse,
-gonfiando le metriche di test.
+La suddivisione assegna i file in modo indipendente l'uno dall'altro. Tale
+procedura è corretta solo se le immagini sono acquisizioni distinte: se
+provenissero da sequenze video di una stessa vite, frame contigui sarebbero
+quasi identici e uno split casuale collocherebbe quasi-duplicati in partizioni
+diverse, gonfiando le metriche di test.
 
-In tal caso occorre una suddivisione per gruppi (per vite o per acquisizione), con
-interi gruppi assegnati a una sola partizione. La questione va risolta o
-esplicitamente dichiarata in tesi.
+**Le immagini del dataset non provengono da sequenze video**, ma sono
+acquisizioni indipendenti. Lo split casuale è quindi metodologicamente valido e
+non è necessaria una suddivisione per gruppi.
+
+**Ripartizione effettiva** su 93 immagini: 65 train (69,9 %), 14 validation
+(15,1 %), 14 test (15,1 %). Impronta della partizione: `d57f79eb`.
 
 ---
 
@@ -267,6 +325,17 @@ iniziale usava `cv2.imread()` senza flag, che converte sempre in BGR a 8 bit:
 sui file ToF a 16 bit questo comportava una perdita di informazione silenziosa, e
 salvava le immagini in scala di grigi su tre canali identici.
 
+**Formato effettivo dei dati.** La verifica sui file di intensità ha dato
+`uint8` con forma `(480, 640)`: immagini a 8 bit e canale singolo. Non si è
+quindi verificata alcuna perdita di profondità di bit con il codice precedente.
+Resta però una differenza rilevante: `cv2.imread()` senza flag restituiva
+`(480, 640, 3)` in formato BGR, ovvero tre canali identici, triplicando
+inutilmente lo spazio occupato. Con `IMREAD_UNCHANGED` i file aumentati sono a
+canale singolo, coerentemente con `MODALITY_CHANNELS['intensity'] = 1`.
+
+> **Da verificare nella classe `Dataset`:** se il codice originale assumeva
+> immagini di intensità a 3 canali, va adattato al formato a canale singolo.
+
 **Verifica preventiva dei file.** L'esistenza di tutti i file sorgente è
 controllata prima di scrivere qualsiasi output, per non lasciare le cartelle in
 stato incoerente.
@@ -291,10 +360,40 @@ Su dati sintetici di controllo:
 
 ## Riepilogo delle questioni aperte
 
-| # | Questione | Stato |
+### Risolte
+
+| # | Questione | Esito |
 |---|---|---|
-| 1 | Frame indipendenti o sequenze continue? Impatta la validità dello split casuale | **Da risolvere** |
-| 2 | `dilation_kernel_size` da 2 a 3: verifica visiva sul tralcio | In corso |
-| 3 | Formato dei file di intensità (8 o 16 bit): impatta la classe `Dataset` | Da verificare |
-| 4 | Pesi delle classi: calcolati in EDA e salvati su file, da ricaricare nel training | Da implementare |
-| 5 | Definizione delle colonne di `experiments.csv` | Da definire (notebook 03) |
+| 1 | Frame indipendenti o sequenze continue? | Acquisizioni indipendenti: split casuale valido |
+| 2 | `dilation_kernel_size`: 2 o 3? | Mantenuto 2, sulla base della copertura misurata |
+| 3 | Formato dei file di intensità | `uint8` a canale singolo; nessuna perdita di bit |
+
+### Aperte
+
+| # | Questione | Quando |
+|---|---|---|
+| 4 | Pesi delle classi: calcolo in EDA, salvataggio su file, ricarica nel training | Notebook 02 |
+| 5 | Definizione delle colonne di `experiments.csv` | Notebook 03 |
+| 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Notebook 03 |
+
+---
+
+## Stato dell'infrastruttura
+
+**Controllo di versione.** Il codice è tracciato con Git e ospitato su un
+repository privato GitHub. I dati (`data/`), gli output degli esperimenti
+(`experiments/`, `results/`) e le impostazioni locali dell'editor sono esclusi
+dal versionamento. Gli output dei notebook vengono rimossi automaticamente al
+momento del commit tramite `nbstripout`, per mantenere i diff leggibili.
+
+**Ambiente di esecuzione.** Ambiente conda dedicato (`vine`, Python 3.11.15),
+con le versioni delle librerie registrate in `requirements.txt`. La preparazione
+dei dati viene eseguita in locale — l'intero notebook 01 richiede circa 20
+secondi su 93 immagini, contro tempi dell'ordine dei minuti su Colab, dove la
+lettura da Drive costituisce il collo di bottiglia. Il training sarà eseguito su
+Colab per disporre di una GPU con memoria adeguata.
+
+**Nota sulla comparabilità.** Tutte le run destinate alla tabella comparativa
+finale devono essere eseguite sullo stesso hardware: la dimensione del batch,
+vincolata dalla memoria GPU disponibile, influenza il risultato, e run con batch
+diversi non sarebbero confrontabili.
