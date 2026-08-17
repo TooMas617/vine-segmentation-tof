@@ -6,9 +6,7 @@ during an internship at M31.
 
 ## Working agreement
 
-- **Explain, don't just deliver.** The author is learning to write production
-  code. Explain what a change does and why, in enough depth to be understood
-  and defended in a thesis discussion.
+- **Explain, don't just deliver.** The author is learning to write production code. Explain what a change does and why, in enough depth to be understood and defended in a thesis discussion.
 - **Targeted edits over rewrites.** Prefer small, reviewable diffs. Do not
   regenerate a whole file when a few lines change.
 - **Flag behaviour changes.** If a change alters what the code does — not just
@@ -17,6 +15,10 @@ during an internship at M31.
   problem, say so rather than implementing it.
 - **Language.** Code, comments, docstrings and commit messages in English.
   Files under `docs/` in Italian: they are working notes for the thesis.
+- **Commit messages.** Subject line only by default, imperative, under ~50
+  characters. Add a body only when the diff does not explain itself — for
+  example an encoding change, or a fix whose reason is not visible in the code.
+  Do not add a `Co-Authored-By` trailer.
 
 ## Code conventions
 
@@ -29,11 +31,13 @@ during an internship at M31.
 - No hardcoded values in logic. Anything tunable lives in `config.py`.
 - Comments explain *why*, not *what*. The code already says what it does.
 - Section banners in modules and notebooks:
+
   ```python
   # =====================================================
   # 3 - SECTION NAME
   # =====================================================
   ```
+  
 - Validate inputs before touching the filesystem, so a failure never leaves
   output folders half written.
 - Pipeline functions are idempotent: they skip work when the output already
@@ -54,14 +58,18 @@ creation and similar actions are explicit calls made by the notebook.
 VineProject_ToF/
 ├── src/
 │   ├── config.py            paths, hyperparameters, class definitions, run ids
-│   └── data_preparation.py  label maps, skeletons, split, offline augmentation
+│   ├── data_preparation.py  label maps, skeletons, split, offline augmentation
+│   └── exploration.py       inventory, class distribution, dataset statistics
 ├── notebooks/
-│   └── 01_Data_Preparation.ipynb
+│   ├── 01_Data_Preparation.ipynb
+│   └── 02_EDA.ipynb
 ├── docs/
 │   └── pipeline_notes.md    design decisions and rationale (Italian)
 ├── data/                    NOT under version control
 │   ├── raw/                 intensity, depth, confidence, annotations
-│   ├── processed/           label maps, skeletons, colored masks
+│   ├── excluded/            unusable samples, with the reason (README.md)
+│   ├── processed/           label maps, skeletons, colored masks,
+│   │                        class_weights.json, channel_stats.json
 │   ├── splits/              splits.json, shared by every notebook
 │   └── augmented/           train / val / test, materialised
 ├── experiments/             one folder per run — NOT under version control
@@ -86,20 +94,30 @@ dependency needs a C++ compiler. It is only used for online augmentation during
 training, which runs on Colab. `config.print_environment_info()` reports
 missing optional libraries instead of raising.
 
-Data preparation runs locally (~20 s for 93 images). Training will run on Colab
-for GPU memory. All runs feeding the final comparison table must use the same
-hardware: batch size is constrained by GPU memory and affects results.
+Data preparation runs locally (~20 s for the whole dataset). Training will run
+on Colab for GPU memory. All runs feeding the final comparison table must use
+the same hardware: batch size is constrained by GPU memory and affects results.
 
 ## Dataset
 
-93 images, 5 classes: `Background`, `Cane`, `Cordon`, `Node`, `Other`.
-Split 65 / 14 / 14 (seed 42, hash `d57f79eb`).
+92 images, 5 classes: `Background`, `Cane`, `Cordon`, `Node`, `Other`.
+Split 64 / 14 / 14 (seed 42, hash `7afaa392`). One sample was moved to
+`data/excluded/` because its cordon was never annotated. The dataset is meant
+to grow to about 100 images, at which point the split changes again.
 
 Modalities: intensity (1 channel, `uint8`, 480×640), depth (3 channels,
-colorised), confidence (1 channel). Total input: 5 channels.
+colorised), confidence (1 channel). Total input: 5 channels. Part of the raw
+files store the single-channel modalities as three identical planes;
+`data_preparation.read_modality_image()` reconciles them, so every consumer
+sees the channel count `config.MODALITY_CHANNELS` declares.
 
-Annotations are LabelMe JSON with Italian labels, mapped to canonical classes
-through `config.LABEL_ALIASES`.
+Class distribution is heavily imbalanced: Background 83.8 %, Cane 11.3 %,
+Cordon 3.6 %, Other 1.0 %, Node 0.27 %. `Node` is also absent from a quarter of
+the images.
+
+Annotations are LabelMe JSON. Two conventions coexist: 39 files use Italian
+labels and a finer taxonomy, 53 use English labels with better boundary
+accuracy. Both map onto the canonical classes through `config.LABEL_ALIASES`.
 
 ## Decisions already made — do not silently reverse
 
@@ -124,15 +142,49 @@ Full rationale in `docs/pipeline_notes.md`.
   channel count. Plain `imread()` silently converts to 8-bit BGR.
 - **Only flips are used offline.** They preserve labels exactly: no
   interpolation, no invented border pixels.
+- **Channel counts are reconciled at read time**, in
+  `read_modality_image()`, not by rewriting `data/raw` and not in the Dataset.
+  One rule, one place, three consumers. Every file in `data/augmented` is
+  decoded and re-encoded for this reason — `shutil.copy2` would carry the
+  source layout straight through.
+- **Descriptive statistics cover every split; training parameters come from
+  the training split alone.** Class weights and channel statistics feed the
+  model, so measuring them on the whole dataset would leak validation and test
+  information into training.
+- **Statistics are measured on the original images, not the augmented ones.**
+  A flip permutes pixels without changing their values, so the flipped copies
+  carry identical counts at four times the reading cost.
+- **Saved statistics record the `splits_hash` they were measured on**, so
+  values left over from a different partition are reported instead of silently
+  applied. The caller passes the current hash in: `config.py` cannot read the
+  split itself without a circular import.
+- **Excluded samples are moved to `data/excluded/`, never deleted and never
+  filtered in code.** The pipeline starts from the JSON files in
+  `data/raw/annotations`, so a moved sample disappears on its own.
 
 ## Status and next steps
 
 Notebook 01 is complete and has run end to end on the full dataset.
 
+`src/exploration.py` is under construction, one section at a time:
+
+```
+1 - DATASET INVENTORY      consistency, formats, sample display     done
+2 - CLASS DISTRIBUTION     counts, presence, bar chart              done
+3 - CHANNEL STATISTICS     mean and std per channel, histograms
+4 - CLASS WEIGHTS          computation and saving
+5 - SKELETON COVERAGE      kernel 2 vs 3, skeleton display
+6 - OFFLINE AUGMENTATION   visual check of the flips
+```
+
+Each section carries its own plotting function rather than collecting them at
+the end. Plots take a `save_path` and share `_finalise_figure()`.
+
 Next:
-1. **Notebook 02 (EDA)** — dataset statistics, class distribution, class weight
-   computation (saved to disk via `config.save_class_weights`, reloaded during
-   training), augmentation and skeleton visualisation.
+
+1. **Notebook 02 (EDA)** — thin, calls into `exploration.py`. Class weights and
+   channel statistics saved via `config.save_class_weights` and
+   `config.save_channel_stats`, reloaded during training.
 2. **Training modules** — `dataset.py`, `models.py`, `losses.py`, `metrics.py`,
    extracted from the original monolithic notebook.
 3. **Notebook 03 (Training)** — training loop, per-run experiment folder,
@@ -141,10 +193,11 @@ Next:
    comparison table sorted by mean IoU.
 
 Open points are tracked at the end of `docs/pipeline_notes.md`. The most
-immediate: the `Dataset` class must handle single-channel intensity, since the
-original code may have assumed three channels.
+consequential is whether to drop the `Node` class: measurements are in section 5
+of the notes, and the mechanism would be `config.LABELS_TO_IGNORE`, not a merge
+into `Cordon` — only 55 % of node pixels lie on the cordon.
 
 ## Deadline
 
-Thesis due late September 2026. Prefer solutions that are correct and
+Thesis due 17th September 2026. Prefer solutions that are correct and
 defensible over solutions that are elegant but time-consuming.

@@ -4,8 +4,9 @@ Documento di lavoro: registra **cosa fa** ogni fase della pipeline, **quali scel
 implementative** sono state prese e **perché**. Serve come base per il capitolo
 metodologico della tesi e come riferimento per chi riprenderà il codice.
 
-Ultimo aggiornamento: notebook `01_Data_Preparation` completato ed eseguito
-sull'intero dataset (93 immagini) in ambiente locale.
+Ultimo aggiornamento: notebook `01_Data_Preparation` completato; notebook
+`02_EDA` in costruzione. Il dataset è passato da 93 a 92 immagini per
+l'esclusione di un campione con annotazione incompleta (sezione 3).
 
 ---
 
@@ -17,12 +18,16 @@ sull'intero dataset (93 immagini) in ambiente locale.
 VineProject_ToF/
 ├── src/                    moduli Python condivisi
 │   ├── config.py           configurazione centralizzata
-│   └── data_preparation.py logica di preparazione dei dati
+│   ├── data_preparation.py logica di preparazione dei dati
+│   └── exploration.py      analisi esplorativa e statistiche del dataset
 ├── notebooks/
-│   └── 01_Data_Preparation.ipynb
+│   ├── 01_Data_Preparation.ipynb
+│   └── 02_EDA.ipynb
 ├── data/
 │   ├── raw/                intensity, depth, confidence, annotations
-│   ├── processed/          label maps, skeleton, maschere colorate
+│   ├── excluded/           campioni non utilizzabili, con il motivo (README.md)
+│   ├── processed/          label maps, skeleton, maschere colorate,
+│   │                       class_weights.json, channel_stats.json
 │   ├── splits/             splits.json
 │   └── augmented/          train / val / test materializzati
 ├── experiments/            una cartella per run
@@ -89,6 +94,44 @@ La mappatura è molti-a-uno: `tralcio` e `tralcio_secco` confluiscono entrambe i
 sottocategorie in fase di annotazione, senza vincolare la tassonomia del modello.
 Le sottocategorie restano recuperabili dai JSON originali se in futuro servisse
 una granularità maggiore.
+
+**Due convenzioni di annotazione coesistono.** La verifica eseguita in fase di
+EDA ha mostrato che il dataset non usa un vocabolario unico: 39 file su 92 usano
+etichette italiane, 53 usano etichette inglesi.
+
+| Convenzione | File | Vocabolario |
+|---|---|---|
+| Italiana | 39 | `tralcio`, `tralcio_secco`, `cordone`, `curva`, `nodo`, `altro`, `ferro` |
+| Inglese | 53 | `cane`, `cordon`, `node`, `other` |
+
+Le due convenzioni **non hanno la stessa granularità**: quella inglese non
+distingue il tralcio secco da quello vivo, non separa la curva dal resto del
+cordone e non annota il filo di ferro. Poiché `tralcio` e `tralcio_secco`
+confluiscono comunque in `Cane`, `curva` e `cordone` in `Cordon`, e `ferro` è
+fra le etichette ignorate, la mappatura assorbe integralmente la differenza: le
+label map prodotte dalle due convenzioni sono equivalenti.
+
+**Le due convenzioni si compensano.** La convenzione italiana è più ricca sul
+piano della tassonomia, ma quella inglese è **più accurata sui margini**: i
+contorni delle forme seguono le strutture più fedelmente. Il confronto non è
+quindi fra un sottoinsieme migliore e uno peggiore, ma fra due qualità diverse —
+granularità delle etichette contro precisione geometrica.
+
+*Conseguenza da tenere presente.* Poiché tutte le sottocategorie confluiscono
+comunque nelle cinque classi canoniche, la granularità aggiuntiva delle 39
+immagini italiane **non viene sfruttata** dal modello attuale, mentre la
+precisione dei margini incide direttamente su ogni metrica basata su
+sovrapposizione di area. Sui dati come sono oggi, quindi, la convenzione inglese
+è quella che contribuisce di più. La granularità italiana tornerebbe rilevante
+solo se il problema cambiasse — per esempio distinguendo il tralcio secco da
+quello vivo, distinzione rilevante in potatura — e in quel caso il sottoinsieme
+utilizzabile sarebbe meno della metà del dataset.
+
+*Implicazione sulle metriche.* Una differenza sistematica di precisione dei
+margini fra due sottoinsiemi introduce rumore nell'etichettatura che il modello
+non può apprendere. Se un giorno le metriche di test risultassero
+inspiegabilmente peggiori del previsto, vale la pena verificare come i campioni
+delle due convenzioni si distribuiscono fra le partizioni.
 
 **Etichette escluse.** `ferro` e `bud` sono presenti nelle annotazioni ma escluse
 dalle maschere. Vengono scartate silenziosamente, distinguendole dalle etichette
@@ -282,8 +325,44 @@ diverse, gonfiando le metriche di test.
 acquisizioni indipendenti. Lo split casuale è quindi metodologicamente valido e
 non è necessaria una suddivisione per gruppi.
 
-**Ripartizione effettiva** su 93 immagini: 65 train (69,9 %), 14 validation
-(15,1 %), 14 test (15,1 %). Impronta della partizione: `d57f79eb`.
+### Esclusione di campioni
+
+Un campione, `blaze-101-25367037-20087`, è stato tolto dal dataset. Il cordone è
+presente e ben visibile nell'immagine, ma **non è annotato**: nel JSON non
+compare alcuna forma `cordone`/`cordon`, e la label map risultava priva di pixel
+di quella classe. Era l'unica immagine su 93 in questa condizione — la seconda
+più povera di cordone ne conta 4 682 pixel, contro una mediana di 11 052.
+
+*Meccanismo adottato.* I quattro file del campione (annotazione più le tre
+modalità grezze) sono stati spostati in `data/excluded/`, che rispecchia la
+struttura di `data/raw/`. La pipeline parte dai JSON presenti in
+`data/raw/annotations/`, quindi il campione sparisce da solo da label map,
+split e dataset aumentato, **senza alcuna modifica al codice**.
+
+*Motivazione della scelta.* Le alternative erano cancellare i file o
+introdurre una lista di esclusione in `config.py`. La cancellazione rende un
+campione mancante indistinguibile da una perdita accidentale; una lista nel
+codice mescola una questione di qualità del dato con la configurazione del
+modello. Lo spostamento conserva i file, rende l'esclusione evidente a chi
+guarda le cartelle e permette di reintegrare il campione spostandolo indietro
+una volta annotato. Il `README.md` in `data/excluded/` elenca i campioni e la
+procedura di recupero.
+
+*Contesto.* Il dataset è destinato a crescere fino a circa 100 immagini con
+annotazioni aggiunte manualmente; in quell'occasione le annotazioni esistenti
+verranno ricontrollate e questo campione potrà rientrare. La partizione cambierà
+comunque a quel punto, quindi ricalcolarla ora non ha costo.
+
+### Ripartizione effettiva
+
+Su 92 immagini: 64 train (69,6 %), 14 validation (15,2 %), 14 test (15,2 %).
+Impronta della partizione: `7afaa392`.
+
+> La partizione precedente, su 93 immagini, era 65/14/14 con impronta
+> `d57f79eb`. Rimuovendo uno stem l'intera partizione viene ridisegnata, non
+> solo il campione tolto: `train_test_split` mescola l'elenco completo, quindi
+> l'assegnazione di tutti gli altri campioni cambia. Metriche prodotte con
+> impronte diverse non sono confrontabili.
 
 ---
 
@@ -306,9 +385,33 @@ bordo inventato, indici di classe intatti. Rotazioni o deformazioni elastiche
 richiederebbero interpolazione nearest-neighbour sulle label e introdurrebbero
 artefatti sulle strutture sottili, che sono proprio l'oggetto del problema.
 
-**Validation e test copiati senza modifiche.** Le tre cartelle hanno la stessa
+**Validation e test scritti senza flip.** Le tre cartelle hanno la stessa
 struttura, così la classe `Dataset` le tratta in modo identico; solo il contenuto
 di train è aumentato.
+
+Fino alla correzione dei canali queste due partizioni venivano copiate **byte per
+byte** con `shutil.copy2`, che duplica il file senza mai aprirlo. Ora ogni file
+viene **decodificato** — il PNG compresso viene letto e ricostruito come array di
+pixel in memoria — e **ricodificato** da quell'array in un file nuovo.
+
+*Cosa cambia davvero.* Sui valori dei pixel nulla: il PNG è un formato senza
+perdite, quindi l'array riletto da disco è identico a quello scritto. Cambiano
+solo tre cose, nessuna delle quali ha effetto sul training: il numero di canali,
+che è lo scopo dell'operazione; i metadati accessori del PNG, che `imwrite`
+rigenera da zero e quindi non conserva; la dimensione del file, perché il livello
+di compressione in scrittura può differire da quello del sorgente.
+
+*Perché la copia letterale non era più utilizzabile.* Il numero di canali di un
+PNG non è modificabile senza decodificarlo — è una proprietà di come i pixel sono
+compressi nel file. `copy2` non guarda dentro, quindi trasportava intatto il
+formato del sorgente e lasciava validation e test con esattamente l'incoerenza
+che `read_modality_image()` esiste per rimuovere. Il train ne era immune solo per
+un motivo accidentale: veniva già decodificato per applicare i flip.
+
+La ricodifica non è quindi un miglioramento in sé, è il prezzo da pagare per
+poter intervenire sui canali. Verificato dopo il cambiamento: le copie ribaltate
+coincidono ancora esattamente con `cv2.flip` applicato ai rispettivi originali,
+per tutte e sei le modalità.
 
 **Tutte le modalità sempre elaborate.** L'augmentation non tiene conto di
 `ENABLED_MODALITIES`: il dataset aumentato descrive i *dati*, non l'*esperimento*.
@@ -325,16 +428,49 @@ iniziale usava `cv2.imread()` senza flag, che converte sempre in BGR a 8 bit:
 sui file ToF a 16 bit questo comportava una perdita di informazione silenziosa, e
 salvava le immagini in scala di grigi su tre canali identici.
 
-**Formato effettivo dei dati.** La verifica sui file di intensità ha dato
-`uint8` con forma `(480, 640)`: immagini a 8 bit e canale singolo. Non si è
-quindi verificata alcuna perdita di profondità di bit con il codice precedente.
-Resta però una differenza rilevante: `cv2.imread()` senza flag restituiva
-`(480, 640, 3)` in formato BGR, ovvero tre canali identici, triplicando
-inutilmente lo spazio occupato. Con `IMREAD_UNCHANGED` i file aumentati sono a
-canale singolo, coerentemente con `MODALITY_CHANNELS['intensity'] = 1`.
+**Formato effettivo dei dati — conclusione corretta in fase di EDA.** Una nota
+precedente affermava che i file di intensità fossero `uint8` con forma
+`(480, 640)`, quindi a canale singolo. **L'affermazione era falsa per un quarto
+del dataset.** L'ispezione sistematica di tutti i file, eseguita nella sezione 1
+del notebook 02, ha mostrato due lotti di acquisizione con formati diversi:
 
-> **Da verificare nella classe `Dataset`:** se il codice originale assumeva
-> immagini di intensità a 3 canali, va adattato al formato a canale singolo.
+| Lotto | File | `intensity` / `confidence` |
+|---|---|---|
+| `blaze-101-25367037-*` | 69 | 1 canale, `(480, 640)` |
+| `blaze1_2026*` | 24 | 3 canali, `(480, 640, 3)` |
+
+I 24 file a tre canali contengono **tre piani identici**: un'immagine in scala
+di grigi salvata come RGB, verificata su tutti e 24 e per entrambe le modalità.
+`depth` è invece genuinamente a tre canali su tutti i file (0 su 93 con piani
+identici), quindi `MODALITY_CHANNELS['depth'] = 3` era ed è corretto.
+
+*Perché l'errore era sfuggito.* La funzione originale accumulava i formati in un
+insieme, segnalava con un avviso la presenza di più formati, e poi stampava
+`next(iter(formats))` — **un formato arbitrario estratto dall'insieme**. La riga
+di riepilogo mostrava quindi un solo formato e sembrava conclusiva, mentre
+l'avviso passava inosservato. La funzione che l'ha sostituita stampa `MIXED (n)`
+al posto di un rappresentante: un valore non uniforme deve essere visibile come
+tale, non riassunto.
+
+*Conseguenza se non corretto.* La classe `Dataset` concatena le modalità: avrebbe
+prodotto tensori a 5 canali per 69 campioni e a 9 canali per 24. Il caso migliore
+è un errore al momento di impilare il batch; il peggiore è un "aggiustamento" con
+uno `squeeze` che disallinea silenziosamente i canali.
+
+**Riconciliazione dei canali in lettura.** La regola è implementata in
+`read_modality_image()`: si legge con `IMREAD_UNCHANGED`, e se il file ha più
+canali di quanti `config.MODALITY_CHANNELS` ne dichiari, si verifica che i piani
+siano identici e si tiene il primo. Se i piani differiscono la funzione
+**solleva un'eccezione**, perché quella sarebbe una perdita di informazione e non
+una ridondanza di formato.
+
+*Motivazione della collocazione.* I dati grezzi restano intatti: sono il dato
+consegnato e non vanno riscritti. La regola vive nel punto di lettura, quindi
+esiste una sola volta ed è condivisa da tutti i consumatori — augmentation
+offline, analisi esplorativa e la futura classe `Dataset` — invece di dover
+essere ricordata in tre posti. Il punto aperto sull'adattamento della classe
+`Dataset` all'intensità a canale singolo è così chiuso alla radice: il dato che
+le arriva è già conforme alla configurazione.
 
 **Verifica preventiva dei file.** L'esistenza di tutti i file sorgente è
 controllata prima di scrivere qualsiasi output, per non lasciare le cartelle in
@@ -358,6 +494,162 @@ Su dati sintetici di controllo:
 
 ---
 
+## 5. Analisi esplorativa (notebook 02)
+
+**Input:** dataset preparato dal notebook 01.
+**Output:** `class_weights.json`, `channel_stats.json`, figure di controllo.
+
+### Scelte
+
+**Statistiche descrittive su tutti gli split, parametri dal solo training set.**
+Distribuzione delle classi e statistiche di canale vengono calcolate e riportate
+per train, validation, test e per il dataset intero. Solo i valori derivati dal
+**training set** vengono però salvati su disco e usati durante l'addestramento.
+
+*Motivazione.* Pesi delle classi e statistiche di normalizzazione entrano nel
+modello: calcolarli sull'intero dataset farebbe filtrare nell'addestramento
+informazione proveniente da validation e test. È una forma lieve di leakage, ma
+verificabile e facilmente contestabile in sede di discussione. Le stesse
+statistiche calcolate per partizione restano invece utili come **controllo
+descrittivo**: mostrano se lo split casuale ha prodotto partizioni comparabili e
+segnalerebbero un eventuale scostamento sistematico fra i lotti di acquisizione.
+
+*Cautela nella lettura.* Con 14 immagini in validation e in test la numerosità
+campionaria effettiva è il numero di **immagini**, non di pixel: i pixel dentro
+una stessa immagine sono fortemente correlati, perché una classe o è presente
+nella scena o non lo è. Le proporzioni per partizione vanno quindi presentate
+come confronto di plausibilità, non come prova di equivalenza statistica.
+
+**Presenza delle classi come controllo separato dalla quota di pixel.** Oltre
+alla frazione di pixel si conta in **quante immagini** ciascuna classe compare.
+
+*Motivazione.* Una classe assente da una partizione rende il suo IoU indefinito
+su quella partizione, e di conseguenza la mean IoU non confrontabile fra run —
+proprio la metrica che guida `MONITOR_METRIC` e la tabella comparativa finale.
+La quota di pixel non rileva questa condizione: una classe può avere una
+frazione piccola ma diffusa, oppure grande ma concentrata in poche immagini.
+
+**Statistiche misurate sulle immagini originali, non su quelle aumentate.** Le
+label map vengono lette da `data/processed/`, filtrate secondo lo split, invece
+che dalle cartelle di `data/augmented/`.
+
+*Motivazione.* Un flip è una permutazione di pixel: non altera l'istogramma dei
+valori. Le copie ribaltate portano quindi esattamente gli stessi conteggi
+dell'originale, quattro volte. Leggerle darebbe frequenze, medie e deviazioni
+standard identiche al costo di quattro volte il tempo.
+
+**Firma di provenienza nei valori salvati.** `class_weights.json` e
+`channel_stats.json` registrano lo `splits_hash` della partizione su cui sono
+stati misurati; al caricamento il valore viene confrontato con quello corrente e
+una discrepanza produce un avviso.
+
+*Motivazione.* Senza questa firma, ricalcolare lo split lascerebbe su disco pesi
+e statistiche relativi alla partizione precedente. Il training proseguirebbe con
+valori sbagliati senza alcun errore. Il confronto è a carico del chiamante:
+`config.py` non può leggere lo split da sé, perché importare `data_preparation`
+creerebbe un ciclo di import.
+
+**Ordine dei canali dichiarato esplicitamente.** `MODALITY_ORDER` è derivato
+dall'ordine di dichiarazione di `MODALITY_CHANNELS`, e `build_channel_names()`
+assegna un nome a ciascuno dei cinque canali.
+
+*Motivazione.* L'EDA misura cinque medie e cinque deviazioni standard in un certo
+ordine; la classe `Dataset` le applicherà impilando le modalità nel proprio
+ordine. Se i due divergessero, ogni canale verrebbe normalizzato con le
+statistiche di un altro — un errore che non produce eccezioni e non è visibile
+nelle metriche. I nomi dei canali sono salvati nel file e verificati in lettura.
+
+**Rimozione del metodo `effective_num` per i pesi delle classi.** Dei cinque
+metodi previsti ne restano quattro: `sqrt_inverse`, `inverse`, `median_freq`,
+`none`.
+
+*Motivazione.* La formula del numero effettivo di campioni, `(1 - β) / (1 - βⁿ)`
+con β = 0,9999, è pensata per conteggi di **campioni**, dell'ordine delle
+migliaia. Applicata a conteggi di **pixel**, dell'ordine dei milioni, `βⁿ` è
+indistinguibile da zero per ogni classe: i pesi collassano tutti sullo stesso
+valore e, dopo la normalizzazione, il metodo restituisce pesi uniformi. Non
+avrebbe quindi avuto alcun effetto. L'implementazione precedente mascherava il
+problema introducendo un fattore di scala arbitrario (`total_samples = 1000`) che
+rendeva il risultato dipendente da un numero inventato.
+
+### Distribuzione misurata
+
+Su 92 immagini, partizione `7afaa392`. Quota di pixel per classe:
+
+| Classe | train | val | test | totale |
+|---|---|---|---|---|
+| Background | 83,55 % | 83,37 % | 85,35 % | 83,80 % |
+| Cane | 11,61 % | 11,66 % | 9,75 % | 11,33 % |
+| Cordon | 3,58 % | 3,61 % | 3,67 % | 3,60 % |
+| Node | 0,26 % | 0,37 % | 0,24 % | 0,27 % |
+| Other | 1,01 % | 0,98 % | 0,99 % | 1,00 % |
+
+Numero di immagini in cui ciascuna classe compare:
+
+| Classe | train | val | test | totale |
+|---|---|---|---|---|
+| Background | 64/64 | 14/14 | 14/14 | 92/92 |
+| Cane | 64/64 | 14/14 | 14/14 | 92/92 |
+| Cordon | 64/64 | 14/14 | 14/14 | 92/92 |
+| Node | 45/64 | 12/14 | 11/14 | 68/92 |
+| Other | 62/64 | 13/14 | 12/14 | 87/92 |
+
+**Lo sbilanciamento è forte ma non estremo.** Background è circa 310 volte più
+frequente di `Node`. Con `sqrt_inverse` questo si traduce in un peso di circa
+17,6 volte quello dello sfondo — elevato ma trattabile, ed è esattamente la
+ragione per cui quel metodo è preferito a `inverse`, che produrrebbe un fattore
+310 e renderebbe l'addestramento instabile sulle classi rare.
+
+**`Node` non è solo raro, è spesso assente.** Compare in 68 immagini su 92: manca
+del tutto da un quarto del dataset. È un'informazione che la sola quota di pixel
+nascondeva, e ha due conseguenze — le metriche calcolate per immagine su `Node`
+sono indefinite in 24 casi, e la varianza del suo IoU sarà alta. È il dato che
+motiva la valutazione riportata più sotto.
+
+**Il controllo di presenza passa.** Ogni classe compare in ogni partizione, quindi
+la mean IoU resta ben definita ovunque. Il margine più stretto è `Node` nel test,
+presente in 11 immagini su 14.
+
+**Le partizioni sono comparabili.** Lo scostamento maggiore è su `Cane`, 9,75 %
+nel test contro 11,61 % nel train. Su 14 immagini è entro la variabilità attesa e
+non giustifica una suddivisione stratificata; resta un valore da riguardare se il
+test dovesse comportarsi in modo anomalo.
+
+### Sviluppo futuro: eliminazione della classe `Node`
+
+`Node` è la classe più problematica: circa lo 0,3 % dei pixel, e assente da un
+quarto delle immagini. Si è quindi valutata l'ipotesi di eliminarla.
+
+**L'ipotesi iniziale era di assorbirla in `Cordon`**, sul presupposto che i nodi
+si trovino sul cordone. Le misure non la sostengono (dati su 93 immagini, prima
+dell'esclusione del campione della sezione 3):
+
+| Misura | Valore |
+|---|---|
+| Pixel di `Node` interni alla maschera del cordone | 54,6 % |
+| Bordo dei pixel di `Node` su `Cordon` | 38,4 % |
+| Bordo dei pixel di `Node` su `Cane` | 32,1 % |
+| Bordo dei pixel di `Node` su `Background` | 28,9 % |
+
+Quasi metà dei nodi **non** si trova sul cordone, coerentemente con il fatto che
+un nodo è tale su qualsiasi germoglio. Il caso limite lo conferma: il campione
+escluso in sezione 3 conteneva due nodi annotati e nessun cordone. Una fusione
+uniforme verso `Cordon` etichetterebbe come cordone circa il 45 % di pixel che
+stanno sui tralci, corrompendo entrambe le classi.
+
+**Meccanismo corretto, se si decidesse di procedere:** aggiungere `nodo`/`node`
+a `config.LABELS_TO_IGNORE`. I poligoni dei nodi non verrebbero rasterizzati e
+quei pixel conserverebbero la struttura sottostante — cordone dove il nodo sta
+sul cordone, tralcio dove sta sul tralcio. È una fusione corretta pixel per
+pixel invece che una regola uniforme sbagliata in metà dei casi, e costa una
+riga di configurazione.
+
+*Da verificare prima di adottarlo:* quanti pixel di `Node` finirebbero su
+`Background`. Il 28,9 % di bordo su sfondo suggerisce che una parte dei poligoni
+deborda oltre le strutture annotate.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
@@ -366,15 +658,21 @@ Su dati sintetici di controllo:
 |---|---|---|
 | 1 | Frame indipendenti o sequenze continue? | Acquisizioni indipendenti: split casuale valido |
 | 2 | `dilation_kernel_size`: 2 o 3? | Mantenuto 2, sulla base della copertura misurata |
-| 3 | Formato dei file di intensità | `uint8` a canale singolo; nessuna perdita di bit |
+| 3 | Formato dei file di intensità | **Due lotti con formati diversi**; riconciliati in lettura da `read_modality_image()` — sezione 4 |
+| 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Chiuso a monte: il dato che arriva alla classe è già conforme a `MODALITY_CHANNELS` |
+
+La questione 3 era stata dichiarata risolta con una conclusione **errata**: la
+verifica originale ispezionava un campione casuale e ne riportava un formato
+arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 
 ### Aperte
 
 | # | Questione | Quando |
 |---|---|---|
-| 4 | Pesi delle classi: calcolo in EDA, salvataggio su file, ricarica nel training | Notebook 02 |
+| 4 | Pesi delle classi: calcolo in EDA, salvataggio su file, ricarica nel training | Notebook 02, in corso |
 | 5 | Definizione delle colonne di `experiments.csv` | Notebook 03 |
-| 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Notebook 03 |
+| 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Dopo l'ampliamento del dataset |
+| 8 | Riannotazione del campione escluso e revisione delle annotazioni esistenti | All'ampliamento del dataset a ~100 immagini |
 
 ---
 
@@ -387,10 +685,14 @@ dal versionamento. Gli output dei notebook vengono rimossi automaticamente al
 momento del commit tramite `nbstripout`, per mantenere i diff leggibili.
 
 **Ambiente di esecuzione.** Ambiente conda dedicato (`vine`, Python 3.11.15),
-con le versioni delle librerie registrate in `requirements.txt`. La preparazione
-dei dati viene eseguita in locale — l'intero notebook 01 richiede circa 20
-secondi su 93 immagini, contro tempi dell'ordine dei minuti su Colab, dove la
-lettura da Drive costituisce il collo di bottiglia. Il training sarà eseguito su
+con le versioni delle librerie registrate in `requirements.txt`. Il file era
+salvato in UTF-16 con BOM, effetto di `pip freeze >` eseguito in PowerShell: in
+quella codifica `pip install -r` può rifiutarlo su un'altra macchina, e avrebbe
+rotto la configurazione dell'ambiente su Colab. È stato riscritto in UTF-8.
+
+La preparazione dei dati viene eseguita in locale — l'intero notebook 01
+richiede circa 20 secondi sul dataset completo, contro tempi dell'ordine dei
+minuti su Colab, dove la lettura da Drive costituisce il collo di bottiglia. Il training sarà eseguito su
 Colab per disporre di una GPU con memoria adeguata.
 
 **Nota sulla comparabilità.** Tutte le run destinate alla tabella comparativa
