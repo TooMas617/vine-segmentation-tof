@@ -21,7 +21,7 @@ import os
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -113,9 +113,12 @@ RESULTS_DIR: Path = BASE_PATH / "results"
 # Single CSV indexing every training run, used to compare configurations.
 RESULTS_CSV: Path = RESULTS_DIR / "experiments.csv"
 
-# Class weights are computed once during EDA (notebook 02) and reloaded by the
-# training notebook. Storing them on disk keeps the notebooks independent.
+# Both files are measured once during EDA (notebook 02) and reloaded by the
+# training notebook, which keeps the notebooks independent of each other.
+# They are kept apart because they have different consumers: the weights feed
+# the loss function, the channel statistics feed input normalisation.
 CLASS_WEIGHTS_JSON: Path = DATA_DIR / "processed" / "class_weights.json"
+CHANNEL_STATS_JSON: Path = DATA_DIR / "processed" / "channel_stats.json"
 
 PATHS: Dict[str, Any] = {
     "base": BASE_PATH,
@@ -224,6 +227,67 @@ INPUT_CHANNELS: int = sum(
     if is_enabled
 )
 
+# Order in which the modalities are concatenated into the input tensor. Every
+# module that touches channels must agree on it: the EDA measures per-channel
+# statistics in this order and the Dataset stacks the modalities in this order,
+# so a disagreement would normalise each channel with another channel's values.
+# Derived from the declaration order of MODALITY_CHANNELS so the two can never
+# fall out of sync.
+MODALITY_ORDER: Tuple[str, ...] = tuple(MODALITY_CHANNELS)
+
+# Suffixes naming the individual channels of a multi-channel modality.
+_CHANNEL_SUFFIXES: Tuple[str, ...] = ("R", "G", "B")
+
+
+def build_channel_names(modalities: Optional[Sequence[str]] = None) -> List[str]:
+    """Build the ordered names of the input channels.
+
+    Single-channel modalities keep their own name, multi-channel ones are
+    suffixed, e.g. "depth_R". The names are stored next to the channel
+    statistics, so a mismatch between what was measured and what is being
+    normalised is detected instead of silently applying the wrong values.
+
+    Args:
+        modalities: Modalities to include, in order. Defaults to every
+            modality in MODALITY_ORDER, whether enabled or not.
+
+    Returns:
+        One name per channel.
+
+    Raises:
+        ValueError: If a modality has no declared channel count, or declares
+            more channels than there are suffixes to name them.
+    """
+    if modalities is None:
+        modalities = MODALITY_ORDER
+
+    channel_names: List[str] = []
+
+    for modality in modalities:
+        if modality not in MODALITY_CHANNELS:
+            raise ValueError(
+                f"Unknown modality '{modality}'. "
+                f"Known modalities: {list(MODALITY_CHANNELS)}"
+            )
+
+        channel_count = MODALITY_CHANNELS[modality]
+
+        if channel_count == 1:
+            channel_names.append(modality)
+            continue
+
+        if channel_count > len(_CHANNEL_SUFFIXES):
+            raise ValueError(
+                f"Modality '{modality}' declares {channel_count} channels but "
+                f"only {len(_CHANNEL_SUFFIXES)} suffixes are defined"
+            )
+
+        channel_names.extend(
+            f"{modality}_{_CHANNEL_SUFFIXES[index]}" for index in range(channel_count)
+        )
+
+    return channel_names
+
 # =====================================================
 # 4 - CLASS INFORMATION
 # =====================================================
@@ -325,20 +389,52 @@ ENCODER: str = "custom"
 ENCODER_WEIGHTS: Optional[str] = None
 
 # =====================================================
-# 8 - CLASS WEIGHTING
+# 8 - DATASET STATISTICS MEASURED DURING EDA
 # =====================================================
+# Both the class weights and the per-channel statistics are measured once in
+# notebook 02 and reloaded here by the training notebook. Each file records the
+# fingerprint of the split it was measured on, so values left over from a
+# different partition are reported instead of being applied silently.
 
 CLASS_WEIGHT_CONFIG: Dict[str, Any] = {
-    # ["sqrt_inverse", "inverse", "median_freq", "effective_num", "none"]
+    # ["sqrt_inverse", "inverse", "median_freq", "none"]
     "method": "sqrt_inverse",
     "normalize": True,
-    "beta": 0.9999,        # Used only when method="effective_num"
     "apply_weights": True,  # Whether the loss actually uses the weights
 }
 
 
-def load_class_weights() -> Optional[torch.Tensor]:
+def _warn_on_splits_mismatch(
+    stored_hash: Optional[str],
+    expected_hash: Optional[str],
+    source: Path,
+) -> None:
+    """Report values that were measured on a different dataset partition.
+
+    Args:
+        stored_hash: Fingerprint recorded when the file was written.
+        expected_hash: Fingerprint of the split currently in use, or None to
+            skip the check.
+        source: File the values were read from, named in the message.
+    """
+    if expected_hash is None or stored_hash == expected_hash:
+        return
+
+    print(
+        f"[WARNING] {source.name} was measured on split '{stored_hash}' but the "
+        f"current split is '{expected_hash}'.\n"
+        "          These values describe a different partition — rerun notebook 02 (EDA)."
+    )
+
+
+def load_class_weights(expected_splits_hash: Optional[str] = None) -> Optional[torch.Tensor]:
     """Load the class weights computed during EDA (notebook 02).
+
+    Args:
+        expected_splits_hash: Fingerprint of the split currently in use. When
+            given, a mismatch with the stored one is reported. This module
+            cannot read the split by itself, since importing data_preparation
+            would create a circular import, so the caller passes it in.
 
     Returns:
         A tensor of shape (NUM_CLASSES,) on DEVICE, or None if the file does
@@ -358,20 +454,32 @@ def load_class_weights() -> Optional[torch.Tensor]:
     with open(CLASS_WEIGHTS_JSON, "r", encoding="utf-8") as file:
         payload = json.load(file)
 
+    _warn_on_splits_mismatch(payload.get("splits_hash"), expected_splits_hash, CLASS_WEIGHTS_JSON)
+
     return torch.tensor(payload["weights"], dtype=torch.float32, device=DEVICE)
 
 
-def save_class_weights(weights: np.ndarray, method: str) -> None:
+def save_class_weights(weights: np.ndarray, method: str, splits_hash: str) -> None:
     """Persist the class weights so the training notebook can reload them.
 
     Args:
         weights: Array of shape (NUM_CLASSES,) with one weight per class.
         method: Name of the weighting method used to compute them.
+        splits_hash: Fingerprint of the split the weights were measured on.
+
+    Raises:
+        ValueError: If weights does not hold exactly one value per class.
     """
+    if len(weights) != NUM_CLASSES:
+        raise ValueError(
+            f"Expected {NUM_CLASSES} weights, one per class, got {len(weights)}"
+        )
+
     CLASS_WEIGHTS_JSON.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "method": method,
+        "splits_hash": splits_hash,
         "class_names": CLASS_NAMES,
         "weights": [float(weight) for weight in weights],
         "computed_at": datetime.now().isoformat(timespec="seconds"),
@@ -381,6 +489,102 @@ def save_class_weights(weights: np.ndarray, method: str) -> None:
         json.dump(payload, file, indent=2)
 
     print(f"[OK] Class weights saved to: {CLASS_WEIGHTS_JSON}")
+
+
+def load_channel_stats(
+    expected_splits_hash: Optional[str] = None,
+) -> Optional[Tuple[List[float], List[float]]]:
+    """Load the per-channel normalisation statistics computed during EDA.
+
+    Args:
+        expected_splits_hash: Fingerprint of the split currently in use. When
+            given, a mismatch with the stored one is reported.
+
+    Returns:
+        Tuple of (means, stds) holding one value per channel, ordered as
+        build_channel_names(), or None if the file does not exist yet.
+
+    Raises:
+        ValueError: If the stored channels differ from the current ones.
+            Normalising a channel with another channel's statistics corrupts
+            every input silently, so this is an error rather than a warning.
+    """
+    if not CHANNEL_STATS_JSON.exists():
+        print(
+            f"[WARNING] Channel statistics file not found: {CHANNEL_STATS_JSON}\n"
+            "          Run notebook 02 (EDA) first."
+        )
+        return None
+
+    with open(CHANNEL_STATS_JSON, "r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    expected_channels = build_channel_names()
+
+    if payload.get("channel_names") != expected_channels:
+        raise ValueError(
+            f"{CHANNEL_STATS_JSON.name} holds statistics for "
+            f"{payload.get('channel_names')} but the current configuration "
+            f"declares {expected_channels}. Rerun notebook 02 (EDA)."
+        )
+
+    _warn_on_splits_mismatch(payload.get("splits_hash"), expected_splits_hash, CHANNEL_STATS_JSON)
+
+    return payload["means"], payload["stds"]
+
+
+def save_channel_stats(
+    means: Sequence[float],
+    stds: Sequence[float],
+    splits_hash: str,
+) -> None:
+    """Persist the per-channel statistics used to normalise the input.
+
+    Statistics are stored for every modality declared in MODALITY_CHANNELS,
+    whether or not it is currently enabled: the file describes the data, not
+    the experiment, so re-enabling a modality can never reuse a file that has
+    no values for it. Picking the enabled subset is the Dataset's job.
+
+    Args:
+        means: Per-channel mean, ordered as build_channel_names().
+        stds: Per-channel standard deviation, same order.
+        splits_hash: Fingerprint of the split the statistics were measured on.
+
+    Raises:
+        ValueError: If the number of values does not match the declared
+            channels, or a standard deviation is not strictly positive.
+    """
+    channel_names = build_channel_names()
+
+    if len(means) != len(channel_names) or len(stds) != len(channel_names):
+        raise ValueError(
+            f"Expected {len(channel_names)} values per statistic, one per "
+            f"channel {channel_names}, got {len(means)} mean(s) and {len(stds)} std(s)"
+        )
+
+    # Normalisation divides by the standard deviation, so a zero here would
+    # produce infinities on a constant channel rather than an obvious failure.
+    degenerate = [name for name, std in zip(channel_names, stds) if std <= 0]
+    if degenerate:
+        raise ValueError(
+            f"Non-positive standard deviation for channel(s) {degenerate}: "
+            "normalisation would divide by zero."
+        )
+
+    CHANNEL_STATS_JSON.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "splits_hash": splits_hash,
+        "channel_names": channel_names,
+        "means": [float(value) for value in means],
+        "stds": [float(value) for value in stds],
+        "computed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    with open(CHANNEL_STATS_JSON, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2)
+
+    print(f"[OK] Channel statistics saved to: {CHANNEL_STATS_JSON}")
 
 
 # =====================================================
