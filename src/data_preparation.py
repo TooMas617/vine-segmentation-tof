@@ -1175,28 +1175,100 @@ def get_source_dirs() -> Dict[str, Path]:
     return source_dirs
 
 
-def _read_image(path: Path, is_label: bool) -> np.ndarray:
-    """Read an image, preserving whatever the file actually contains.
+def _collapse_redundant_channels(image: np.ndarray, path: Path, modality: str) -> np.ndarray:
+    """Reduce an image to the channel count its modality declares.
+
+    Part of the dataset was exported with single-channel modalities stored as
+    several identical planes, a greyscale image saved as RGB. Left alone, the
+    Dataset would build input tensors of two different widths depending on the
+    acquisition batch a sample comes from. The extra planes carry no
+    information, so only the first is kept.
+
+    Only that exact case is reconciled. Any other disagreement between the file
+    and config.MODALITY_CHANNELS is a real format problem and is reported
+    rather than papered over.
+
+    Args:
+        image: Image decoded with IMREAD_UNCHANGED.
+        path: File the image came from, named in error messages.
+        modality: Modality the file belongs to.
+
+    Returns:
+        The image with as many channels as the modality declares.
+
+    Raises:
+        ValueError: If the channel count cannot be reconciled without losing
+            information.
+    """
+    declared_channels = config.MODALITY_CHANNELS[modality]
+    actual_channels = 1 if image.ndim == 2 else image.shape[2]
+
+    if actual_channels == declared_channels:
+        return image
+
+    if declared_channels != 1:
+        raise ValueError(
+            f"{path.name} holds {actual_channels} channel(s) but modality "
+            f"'{modality}' declares {declared_channels} in config.MODALITY_CHANNELS"
+        )
+
+    planes_are_identical = all(
+        np.array_equal(image[:, :, 0], image[:, :, index])
+        for index in range(1, actual_channels)
+    )
+
+    if not planes_are_identical:
+        raise ValueError(
+            f"{path.name} holds {actual_channels} distinct channel(s) but modality "
+            f"'{modality}' declares 1. Dropping planes would lose information."
+        )
+
+    return image[:, :, 0]
+
+
+def read_modality_image(path: Path, modality: str) -> np.ndarray:
+    """Read one image in the form the rest of the pipeline expects.
+
+    Label maps hold class indices, so they are read as single-channel images
+    and never interpolated or converted. Raw modalities are read with
+    IMREAD_UNCHANGED, which preserves bit depth and channel count — plain
+    imread() would silently downcast 16-bit ToF data to 8-bit BGR — and are
+    then reconciled with config.MODALITY_CHANNELS.
+
+    Every consumer reads through this function: the offline augmentation, the
+    exploratory analysis and the Dataset. The rule that makes the modalities
+    uniform therefore exists in one place instead of three.
 
     Args:
         path: Path to the image file.
-        is_label: True for label maps, which must stay single-channel.
+        modality: Modality the file belongs to, named as in get_source_dirs().
 
     Returns:
-        The image as a NumPy array.
+        The image as a NumPy array, with the number of channels its modality
+        declares.
 
     Raises:
-        ValueError: If the file cannot be decoded.
+        ValueError: If the modality is unknown, the file cannot be decoded, or
+            its channel count cannot be reconciled with the configuration.
     """
-    # IMREAD_UNCHANGED keeps the original bit depth and channel count. Plain
-    # imread() would silently downcast 16-bit ToF data to 8-bit BGR.
+    is_label = modality in LABEL_MODALITIES
+
+    if not is_label and modality not in config.MODALITY_CHANNELS:
+        raise ValueError(
+            f"Unknown modality '{modality}'. Known modalities: "
+            f"{sorted(set(config.MODALITY_CHANNELS) | set(LABEL_MODALITIES))}"
+        )
+
     flag = cv2.IMREAD_GRAYSCALE if is_label else cv2.IMREAD_UNCHANGED
     image = cv2.imread(str(path), flag)
 
     if image is None:
         raise ValueError(f"Could not decode image: {path}")
 
-    return image
+    if is_label:
+        return image
+
+    return _collapse_redundant_channels(image, path, modality)
 
 
 def _check_source_files(
@@ -1238,7 +1310,7 @@ def build_augmented_dataset(
     """Materialise the train, val and test folders used for training.
 
     Training samples are written together with a flipped copy per requested
-    augmentation; validation and test samples are copied unchanged, so the
+    augmentation; validation and test samples are written without flips, so the
     three folders have the same layout and the Dataset class can treat them
     identically.
 
@@ -1300,8 +1372,8 @@ def build_augmented_dataset(
     print(f"Modalities:    {modalities}")
     print(f"Augmentations: {list(augmentations) if augmentations else 'none (originals only)'}")
     print(f"Train:         {len(splits['train'])} -> {len(splits['train']) * (1 + len(flips))}")
-    print(f"Val:           {len(splits['val'])} (copied unchanged)")
-    print(f"Test:          {len(splits['test'])} (copied unchanged)")
+    print(f"Val:           {len(splits['val'])} (no flips)")
+    print(f"Test:          {len(splits['test'])} (no flips)")
     print(f"Overwrite:     {overwrite}")
     print(separator)
 
@@ -1330,27 +1402,26 @@ def _write_split(
 ) -> None:
     """Write one split of the augmented dataset.
 
+    Every file is decoded and re-encoded, including the splits that receive no
+    flip. Copying those byte for byte would be faster, but it would also carry
+    the source channel layout straight through, leaving validation and test
+    with the very inconsistency read_modality_image() exists to remove. PNG
+    re-encoding is lossless, so the round trip costs time and nothing else.
+
     Args:
         split_name: Name of the split, used in the progress bar.
         stems: File stems belonging to the split.
         source_dirs: Mapping returned by get_source_dirs().
         target_dirs: Destination folder per modality.
-        flips: Flips to apply. Empty means the originals are copied as they are.
+        flips: Flips to apply. Empty means only the originals are written.
     """
     description = f"Writing {split_name}"
 
     for stem in tqdm(stems, desc=description):
         filename = f"{stem}.png"
 
-        if not flips:
-            # copy2 preserves the file byte for byte, which avoids a pointless
-            # decode/encode round trip for the untouched splits.
-            for modality, directory in source_dirs.items():
-                shutil.copy2(directory / filename, target_dirs[modality] / filename)
-            continue
-
         for modality, directory in source_dirs.items():
-            image = _read_image(directory / filename, is_label=modality in LABEL_MODALITIES)
+            image = read_modality_image(directory / filename, modality)
             cv2.imwrite(str(target_dirs[modality] / filename), image)
 
             for suffix, flip_code in flips:
