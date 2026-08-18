@@ -794,6 +794,136 @@ deborda oltre le strutture annotate.
 
 ---
 
+## 6. Dataset, augmentation online e dataloader (`dataset.py`)
+
+**Input:** `data/augmented/`, `channel_stats.json`.
+**Output:** batch `(immagine, label, skeleton)` pronti per il training.
+
+### Scelte
+
+**Lettura tramite `read_modality_image()`.** La classe `Dataset` non legge i file
+da sé: passa dalla stessa funzione usata dall'augmentation offline e dall'EDA.
+Riceve quindi sempre il numero di canali dichiarato in `MODALITY_CHANNELS`, e la
+questione aperta sull'adattamento all'intensità a canale singolo non si pone.
+
+**Impilamento secondo `MODALITY_ORDER`.** Lo stesso ordine in cui l'EDA ha
+misurato le statistiche. La selezione delle statistiche dei soli canali attivi
+avviene **per nome** e non per posizione: disattivando una modalità intermedia,
+un'indicizzazione posizionale sposterebbe ogni canale successivo sulle
+statistiche sbagliate senza sollevare nulla.
+
+**Nessuna trasformazione fotometrica.** Decisione metodologica: alterare
+luminosità, contrasto o rumore cambierebbe il significato di un valore di
+profondità e di una misura di affidabilità. Applicarle al solo `intensity`
+romperebbe inoltre la coerenza fisica fra canali che descrivono lo stesso pixel.
+La variabilità di aspetto viene quindi dai soli flip offline.
+
+*Nota sul codice originale.* La pipeline cromatica era definita e configurata,
+ma la classe `Dataset` scavalcava l'oggetto `MultiModalTransform` e ne invocava
+a mano le fasi `geometric` e `normalizer`, saltando `color`. Il risultato era
+coerente con la decisione presa, ma per una via accidentale: il codice
+dichiarava un comportamento e ne eseguiva un altro. L'infrastruttura è stata
+rimossa, così la decisione è leggibile invece che dedotta.
+
+### Ingrandimento: perché il pre-ingrandimento e come sono stati scelti i valori
+
+Il ramo di training ingrandisce l'immagine, applica la geometria casuale e
+ritaglia il centro alla dimensione finale. Il pre-ingrandimento serve a far
+cadere il ritaglio su **pixel reali**: rotazione e distorsione spingono dentro
+la finestra contenuto proveniente da fuori, invece di rifletterci un bordo.
+
+Il ramo di validation ridimensiona e basta, perché i suoi campioni devono
+restare identici fra epoche e fra run.
+
+**Formula dell'ingrandimento.** Detto `f` il fattore di pre-ingrandimento e `s`
+la scala casuale, un campione di training risulta ingrandito di
+
+```
+ingrandimento = (dimensione_target / larghezza_sorgente) · f · s = 0,8 · f · s
+```
+
+dove `0,8 = 512 / 640` è fisso, dati `IMG_SIZE = (512, 512)` e sorgenti
+480×640. Validation e test corrispondono al caso `f · s = 1`, cioè 0,80.
+
+*(I conti sono sulla larghezza. Sull'altezza il fattore fisso sarebbe
+`512/480 = 1,067`, perché l'immagine viene deformata da 3:4 a quadrata. La
+deformazione è però identica nei due rami, quindi il confronto train/val non
+dipende dall'asse scelto.)*
+
+**Situazione con i valori originali** (`f = 1,5`, `s ∈ [0,70 ; 1,30]`):
+
+| | `f · s` | Ingrandimento | Area visibile |
+|---|---|---|---|
+| val/test | 1,00 | **0,80** | 100 % |
+| train, `s = 0,70` | 1,05 | 0,84 | 91 % |
+| train, `s = 1,00` | 1,50 | 1,20 | 44 % |
+| train, `s = 1,30` | 1,95 | 1,56 | 26 % |
+
+Il modello viene quindi valutato a un ingrandimento **inferiore a qualunque
+cosa abbia visto in addestramento**: 0,80 contro un minimo di 0,84.
+
+**Il vincolo che limita la correzione.** `CenterCrop` alla dimensione target
+richiede che l'immagine sia almeno grande quanto il ritaglio, cioè
+`target · f · s ≥ target`, ovvero **`f · s ≥ 1`** — che è esattamente la
+condizione dell'ingrandimento di valutazione. Uno schema
+*ingrandisci-e-ritaglia* può quindi **raggiungere** la scala di valutazione ma
+non scendere sotto: il limite si tocca quando il ritaglio consuma l'immagine
+intera.
+
+**Valore adottato.** `scale_limit` passa da `(-0,30 ; 0,30)` a
+`(-0,32 ; 0,30)`, cioè `s ∈ [0,68 ; 1,30]`. Con `f = 1,5` questo dà
+`f · s = 1,02` all'estremo inferiore: il minimo di training scende da 0,84 a
+0,816, passando dal 5 % al 2 % sopra la scala di valutazione. Il valore esatto
+che azzererebbe il divario è `s = 2/3`, ma `f · s` sarebbe esattamente 1 e un
+arrotondamento a 511 pixel farebbe fallire il ritaglio; 0,68 lascia 10 pixel di
+margine.
+
+**Cosa questa modifica non risolve.** `RandomScale` ha `p = 0,5`: metà dei
+campioni conserva `s = 1,0`, quindi ingrandimento 1,20, il 50 % più zoomato
+della valutazione. Spostare anche quel caso richiederebbe di abbassare `f` da
+1,5 a circa 1,25, che porterebbe il caso tipico a 1,00. Il margine geometrico
+basterebbe — una rotazione di 15° su un lato `L` lascia un quadrato inscritto
+di `L / (cos 15° + sin 15°) = L / 1,225`, cioè 522 px su 640, più dei 512
+necessari — ma `OpticalDistortion` non ha un margine calcolabile
+analiticamente e richiederebbe una verifica visiva. Rimandato: se i risultati
+mostrassero un divario anomalo fra training e validation, è il primo posto
+dove guardare.
+
+### Interpolazione bilineare su un depth colorato — postilla
+
+Il ridimensionamento usa `INTER_LINEAR`, che assegna a ogni pixel di output la
+media pesata dei quattro pixel di input più vicini, **canale per canale**.
+Poiché JET associa uno scalare a un punto su una *curva* nello spazio RGB,
+mediare due colori equivale a prendere un punto sul segmento che li congiunge:
+se la curva non è dritta, il risultato ne esce.
+
+Misurato su un'immagine reale: dopo un `Resize` a 512×512 con `INTER_LINEAR`,
+il **7,4 %** dei pixel ha un colore **assente dalla palette originale**. Con
+`INTER_NEAREST` sarebbe lo 0 %. Il caso peggiore è il bordo fra pixel valido e
+pixel invalido `(0,0,0)`: l'invalidità è binaria, ma l'interpolazione la rende
+continua e genera pixel che sembrano profondità valide mai misurate.
+
+**Nessuna modifica.** Alla rete i tre canali arrivano come tre grandezze
+correlate: non deve invertire alcuna colormap, quindi un colore interpolato è
+per lei un blend liscio come in qualsiasi immagine RGB ridimensionata. Il
+problema diventerebbe di primo ordine solo adottando l'inversione della
+colormap descritta nella sezione 5: in quel caso andrebbe interpolato lo
+scalare, non il colore, e servirebbe `INTER_NEAREST` sulla maschera di validità.
+
+### Dataloader
+
+Solo il loader di training mescola i campioni; validation e test li presentano
+sempre nello stesso ordine, altrimenti i numeri per batch non sarebbero
+confrontabili fra run. Il generatore è inizializzato con `RANDOM_SEED` e i
+worker con `config.seed_worker`, così l'augmentation casuale è riproducibile.
+
+`albumentations` è importato in modo pigro: non è installabile in locale, e
+tutto tranne `build_transforms()` funziona senza. Passando `transform=None` la
+classe `Dataset` normalizza e converte in tensori senza ridimensionare, il che
+permette di verificarla localmente prima di portare il codice su Colab.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
