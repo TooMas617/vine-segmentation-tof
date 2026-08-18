@@ -24,16 +24,27 @@ Typical usage from notebook 02:
     describe_image_formats()
 """
 
+import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 from tqdm import tqdm
 
 import config
-from data_preparation import SPLIT_NAMES, get_source_dirs, load_splits, read_modality_image
+from data_preparation import (
+    FLIP_MAPPING,
+    SPLIT_NAMES,
+    build_skeleton_map,
+    build_skeleton_overlay,
+    get_source_dirs,
+    label_map_to_colored_mask,
+    load_splits,
+    read_modality_image,
+)
 
 # Groups every distribution is reported for: the three partitions and the
 # dataset as a whole. Descriptive figures cover all of them; the numbers that
@@ -73,6 +84,112 @@ def _finalise_figure(figure: Figure, save_path: Optional[Path]) -> None:
         print(f"[OK] Figure saved to: {save_path}")
 
     plt.show()
+
+
+def _as_rgb(image: np.ndarray) -> np.ndarray:
+    """Turn a decoded image into an RGB array fit for display.
+
+    Single-channel modalities are repeated across three channels so they can be
+    blended with a colour mask; colour ones are flipped from the BGR order
+    OpenCV returns. The conversion belongs to display only — the statistics
+    work on the arrays as they are read.
+
+    Args:
+        image: Image as returned by read_modality_image().
+
+    Returns:
+        RGB array of shape (H, W, 3).
+    """
+    if image.ndim == 2:
+        return np.repeat(image[:, :, np.newaxis], 3, axis=2)
+
+    return image[:, :, ::-1]
+
+
+def _pick_stems(count: int, seed: Optional[int] = None) -> List[str]:
+    """Choose a reproducible sample of file stems to display.
+
+    A local random generator is used rather than the global one, so re-running
+    a cell shows the same images instead of depending on whatever consumed
+    randomness earlier in the session.
+
+    Args:
+        count: How many stems to return, capped at the dataset size.
+        seed: Seed of the local generator. Defaults to config.RANDOM_SEED.
+
+    Returns:
+        The chosen stems, sorted.
+    """
+    labels_dir = config.PATHS["processed"]["labels_multi"]
+    all_stems = sorted(path.stem for path in labels_dir.glob("*.png"))
+
+    if not all_stems:
+        raise FileNotFoundError(
+            f"No label map found in {labels_dir}. Run notebook 01 first."
+        )
+
+    generator = random.Random(config.RANDOM_SEED if seed is None else seed)
+
+    return sorted(generator.sample(all_stems, min(count, len(all_stems))))
+
+
+def show_samples(
+    n_samples: int = 3,
+    seed: Optional[int] = None,
+    save_path: Optional[Path] = None,
+    alpha: float = 0.45,
+) -> None:
+    """Display a few samples with their masks, to see what the data looks like.
+
+    Four columns per sample: the intensity image, the multiclass mask, the mask
+    blended over the image, and the skeleton overlay. The blend is the one that
+    matters — it is the only view where a misalignment between an image and its
+    label map would be visible at a glance.
+
+    Args:
+        n_samples: How many samples to display.
+        seed: Seed of the sample choice, so the figure is reproducible.
+        save_path: Destination file for the figure, or None to only display it.
+        alpha: Opacity of the mask in the blended column.
+
+    Raises:
+        FileNotFoundError: If the processed label maps are missing.
+    """
+    stems = _pick_stems(n_samples, seed)
+    source_dirs = get_source_dirs()
+
+    figure, axes = plt.subplots(
+        len(stems), 4, figsize=(14, 3.1 * len(stems)), squeeze=False
+    )
+
+    for row, stem in enumerate(stems):
+        intensity = _as_rgb(read_modality_image(source_dirs["intensity"] / f"{stem}.png", "intensity"))
+        label_multi = read_modality_image(source_dirs["labels_multi"] / f"{stem}.png", "labels_multi")
+        skeleton = read_modality_image(source_dirs["skeleton"] / f"{stem}.png", "skeleton")
+
+        colored = label_map_to_colored_mask(label_multi, config.CLASS_COLORS)
+        blended = cv2.addWeighted(intensity, 1.0, colored, alpha, 0)
+        overlay = build_skeleton_overlay(label_multi, skeleton)
+
+        for column, (image, title) in enumerate(
+            (
+                (intensity, "intensity"),
+                (colored, "multiclass mask"),
+                (blended, "mask over image"),
+                (overlay, "skeleton overlay"),
+            )
+        ):
+            axis = axes[row][column]
+            axis.imshow(image)
+            axis.axis("off")
+            if row == 0:
+                axis.set_title(title, fontsize=10)
+
+        axes[row][0].set_ylabel(stem, fontsize=7)
+
+    figure.suptitle("Dataset samples", fontsize=11)
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
 
 # =====================================================
 # 1 - DATASET INVENTORY
@@ -1109,5 +1226,347 @@ def plot_class_weight_methods(
     axis.grid(axis="y", color="#d8d7d2", linewidth=0.6)
     axis.set_axisbelow(True)
 
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
+
+
+# =====================================================
+# 5 - SKELETON COVERAGE
+# =====================================================
+
+# Above this share of a class occupied by its own skeleton tube, clDice stops
+# measuring centreline connectivity and turns into an area-overlap measure.
+COVERAGE_DEGENERACY_THRESHOLD: float = 0.80
+
+# Kernel sizes put side by side. 2 is the value in use; 3 is the symmetric
+# alternative it was chosen over.
+DEFAULT_COVERAGE_KERNELS: Tuple[int, ...] = (2, 3)
+
+# Colours for the kernel comparison, from the validated palette subset.
+_KERNEL_COLORS: Tuple[str, ...] = ("#2a78d6", "#eb6834")
+
+
+def compute_skeleton_coverage(
+    kernel_sizes: Sequence[int] = DEFAULT_COVERAGE_KERNELS,
+    verbose: bool = True,
+) -> Dict[int, Dict[str, np.ndarray]]:
+    """Measure how much of each class its own skeleton tube covers.
+
+    Coverage is the share of a class's pixels occupied by the dilated
+    centreline. A high value means the tube has swallowed the structure, at
+    which point clDice no longer measures whether the centreline is connected —
+    it measures area overlap, losing the very property it is adopted for.
+
+    This is the analysis behind keeping dilation_kernel_size at 2 rather than
+    moving to the symmetric 3. It runs on every image, not on the training
+    split: it describes a property of the annotations and justifies a
+    configuration choice, it does not produce a training parameter.
+
+    Skeletons are rebuilt in memory for each kernel through
+    data_preparation.build_skeleton_map(), so the files written by notebook 01
+    are neither read for this nor overwritten.
+
+    Args:
+        kernel_sizes: Dilation kernel sizes to compare.
+        verbose: If True, print the summary table.
+
+    Returns:
+        Mapping from kernel size to a mapping from class name to the per-image
+        coverage values, as an array with one entry per image that contains
+        that class.
+
+    Raises:
+        FileNotFoundError: If the processed label maps are missing.
+    """
+    processed = config.PATHS["processed"]
+    multiclass_dir = processed["labels_multi"]
+    binary_dir = processed["labels_binary"]
+
+    label_paths = sorted(multiclass_dir.glob("*.png"))
+    if not label_paths:
+        raise FileNotFoundError(
+            f"No label map found in {multiclass_dir}. Run notebook 01 first."
+        )
+
+    skeleton_config = config.SKELETON_LOSS_CONFIG
+    class_indices = skeleton_config["skeleton_classes"]
+    cordon_index = config.CLASS_NAMES.index("Cordon")
+
+    coverage: Dict[int, Dict[str, List[float]]] = {
+        kernel_size: {config.CLASS_NAMES[index]: [] for index in class_indices}
+        for kernel_size in kernel_sizes
+    }
+
+    for label_path in tqdm(label_paths, desc="Measuring coverage"):
+        label_multi = read_modality_image(label_path, "labels_multi")
+        label_binary = read_modality_image(binary_dir / label_path.name, "labels_binary")
+
+        for kernel_size in kernel_sizes:
+            skeleton_map = build_skeleton_map(
+                label_multi=label_multi,
+                label_binary=label_binary,
+                skeleton_class_indices=class_indices,
+                cordon_index=cordon_index,
+                dilation_kernel_size=kernel_size,
+            )
+
+            for class_index in class_indices:
+                class_pixels = int((label_multi == class_index).sum())
+
+                # A class absent from an image has no coverage to speak of;
+                # counting it as zero would drag every average down.
+                if class_pixels == 0:
+                    continue
+
+                tube_pixels = int((skeleton_map == class_index).sum())
+                coverage[kernel_size][config.CLASS_NAMES[class_index]].append(
+                    tube_pixels / class_pixels
+                )
+
+    as_arrays = {
+        kernel_size: {
+            class_name: np.asarray(values, dtype=np.float64)
+            for class_name, values in per_class.items()
+        }
+        for kernel_size, per_class in coverage.items()
+    }
+
+    if verbose:
+        _print_coverage_report(as_arrays)
+
+    return as_arrays
+
+
+def _print_coverage_report(coverage: Dict[int, Dict[str, np.ndarray]]) -> None:
+    """Print mean, maximum and degenerate-image count for every kernel.
+
+    Args:
+        coverage: Mapping returned by compute_skeleton_coverage().
+    """
+    separator = "=" * 70
+
+    print(separator)
+    print("SKELETON COVERAGE")
+    print(separator)
+    print("Share of a class occupied by its own dilated centreline.")
+    print(f"An image above {COVERAGE_DEGENERACY_THRESHOLD:.0%} makes clDice degenerate")
+    print("into an area-overlap measure.")
+    print()
+    print(f"  {'kernel':<8}{'class':<10}{'images':>8}{'mean':>9}{'max':>9}{'over':>7}")
+
+    for kernel_size, per_class in coverage.items():
+        for class_name, values in per_class.items():
+            if values.size == 0:
+                continue
+            degenerate = int((values > COVERAGE_DEGENERACY_THRESHOLD).sum())
+            print(
+                f"  {f'{kernel_size}x{kernel_size}':<8}{class_name:<10}{values.size:>8}"
+                f"{values.mean():>8.1%}{values.max():>9.1%}{degenerate:>7}"
+            )
+
+    print()
+    print(f"Kernel in use: {config.SKELETON_LOSS_CONFIG['dilation_kernel_size']}")
+    print(separator)
+
+
+def plot_skeleton_coverage(
+    coverage: Dict[int, Dict[str, np.ndarray]],
+    save_path: Optional[Path] = None,
+) -> None:
+    """Draw the coverage distribution of each class, one panel per class.
+
+    What matters is not the average but the upper tail: a kernel is unusable
+    when some images cross the degeneracy threshold, however well it behaves on
+    the rest. The panels therefore show the whole distribution with the
+    threshold marked, rather than a pair of summary bars.
+
+    Args:
+        coverage: Mapping returned by compute_skeleton_coverage().
+        save_path: Destination file for the figure, or None to only display it.
+    """
+    kernel_sizes = list(coverage)
+    class_names = list(next(iter(coverage.values())))
+
+    figure, axes = plt.subplots(
+        1, len(class_names), figsize=(5.5 * len(class_names), 3.4), squeeze=False
+    )
+
+    for column, class_name in enumerate(class_names):
+        axis = axes[0][column]
+
+        for kernel_index, kernel_size in enumerate(kernel_sizes):
+            values = coverage[kernel_size][class_name]
+            if values.size == 0:
+                continue
+            axis.hist(
+                values,
+                bins=20,
+                range=(0.0, 1.0),
+                alpha=0.55,
+                label=f"{kernel_size}x{kernel_size}",
+                color=_KERNEL_COLORS[kernel_index % len(_KERNEL_COLORS)],
+            )
+
+        axis.axvline(
+            COVERAGE_DEGENERACY_THRESHOLD, color="#c0392b", linewidth=1.2, linestyle="--"
+        )
+        axis.set_title(class_name, fontsize=10)
+        axis.set_xlabel("Coverage of the class mask")
+        axis.set_ylabel("Images")
+        axis.legend(frameon=False, fontsize=9)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+
+    figure.suptitle(
+        f"Skeleton coverage by dilation kernel "
+        f"(dashed line: {COVERAGE_DEGENERACY_THRESHOLD:.0%} degeneracy threshold)",
+        fontsize=11,
+    )
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
+
+
+def show_skeleton_examples(
+    n_samples: int = 3,
+    seed: Optional[int] = None,
+    save_path: Optional[Path] = None,
+) -> None:
+    """Display the precomputed skeletons next to the masks they come from.
+
+    Read straight from disk, not through a DataLoader: the point is to check
+    what notebook 01 wrote, and a DataLoader would show it after resizing and
+    random geometric augmentation, which is a different thing.
+
+    The middle column paints the skeleton with the class colours rather than in
+    white, so Cane and Cordon centrelines are told apart at a glance and the
+    colouring reuses the same function the masks use.
+
+    Args:
+        n_samples: How many samples to display.
+        seed: Seed of the sample choice, so the figure is reproducible.
+        save_path: Destination file for the figure, or None to only display it.
+    """
+    stems = _pick_stems(n_samples, seed)
+    source_dirs = get_source_dirs()
+    class_indices = config.SKELETON_LOSS_CONFIG["skeleton_classes"]
+
+    figure, axes = plt.subplots(
+        len(stems), 3, figsize=(11, 3.1 * len(stems)), squeeze=False
+    )
+
+    for row, stem in enumerate(stems):
+        label_multi = read_modality_image(source_dirs["labels_multi"] / f"{stem}.png", "labels_multi")
+        skeleton = read_modality_image(source_dirs["skeleton"] / f"{stem}.png", "skeleton")
+
+        pixel_counts = ", ".join(
+            f"{config.CLASS_NAMES[index]} {int((skeleton == index).sum()):,}"
+            for index in class_indices
+        )
+
+        for column, (image, title) in enumerate(
+            (
+                (label_map_to_colored_mask(label_multi, config.CLASS_COLORS), "multiclass mask"),
+                (label_map_to_colored_mask(skeleton, config.CLASS_COLORS), "skeleton by class"),
+                (build_skeleton_overlay(label_multi, skeleton), "skeleton over mask"),
+            )
+        ):
+            axis = axes[row][column]
+            axis.imshow(image)
+            axis.axis("off")
+            if row == 0:
+                axis.set_title(title, fontsize=10)
+
+        # Printed above the row rather than as an axis label: the axes have
+        # their frame switched off, and a label on a hidden frame never shows.
+        axes[row][1].set_title(
+            pixel_counts if row else f"skeleton by class\n{pixel_counts}", fontsize=8
+        )
+
+    figure.suptitle("Precomputed tubed skeletons", fontsize=11)
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
+
+
+# =====================================================
+# 6 - OFFLINE AUGMENTATION
+# =====================================================
+
+
+def show_offline_augmentation(
+    n_samples: int = 2,
+    seed: Optional[int] = None,
+    save_path: Optional[Path] = None,
+) -> None:
+    """Display a training sample next to the flipped copies written beside it.
+
+    Read from data/augmented/train, so what is shown is what the model will
+    load, not a transformation applied on the fly for the figure. Image and
+    label are shown one above the other for every variant: a flip applied to
+    one and not the other would be obvious here and invisible in any metric.
+
+    Args:
+        n_samples: How many original samples to display.
+        seed: Seed of the sample choice, so the figure is reproducible.
+        save_path: Destination file for the figure, or None to only display it.
+
+    Raises:
+        FileNotFoundError: If the augmented training split is missing, or holds
+            no flipped copy of the chosen sample.
+    """
+    train_dirs = config.PATHS["augmented"]["train"]
+    train_stems = sorted(
+        path.stem
+        for path in train_dirs["labels_multi"].glob("*.png")
+        if not any(path.stem.endswith(suffix) for suffix, _ in FLIP_MAPPING.values())
+    )
+
+    if not train_stems:
+        raise FileNotFoundError(
+            f"No original sample found in {train_dirs['labels_multi']}. "
+            "Run notebook 01 first."
+        )
+
+    generator = random.Random(config.RANDOM_SEED if seed is None else seed)
+    stems = sorted(generator.sample(train_stems, min(n_samples, len(train_stems))))
+
+    variants = [("original", "")] + [
+        (name, suffix) for name, (suffix, _) in FLIP_MAPPING.items()
+    ]
+
+    figure, axes = plt.subplots(
+        2 * len(stems), len(variants), figsize=(3.2 * len(variants), 2.6 * 2 * len(stems)),
+        squeeze=False,
+    )
+
+    for sample_index, stem in enumerate(stems):
+        for column, (variant_name, suffix) in enumerate(variants):
+            filename = f"{stem}{suffix}.png"
+            intensity_path = train_dirs["intensity"] / filename
+            label_path = train_dirs["labels_multi"] / filename
+
+            if not intensity_path.exists() or not label_path.exists():
+                raise FileNotFoundError(
+                    f"Missing augmented file for variant '{variant_name}': {filename}. "
+                    "Rebuild with build_augmented_dataset(overwrite=True)."
+                )
+
+            intensity = _as_rgb(read_modality_image(intensity_path, "intensity"))
+            label_multi = read_modality_image(label_path, "labels_multi")
+
+            image_axis = axes[2 * sample_index][column]
+            mask_axis = axes[2 * sample_index + 1][column]
+
+            image_axis.imshow(intensity)
+            mask_axis.imshow(label_map_to_colored_mask(label_multi, config.CLASS_COLORS))
+
+            for axis in (image_axis, mask_axis):
+                axis.axis("off")
+
+            if sample_index == 0:
+                image_axis.set_title(variant_name, fontsize=10)
+
+    figure.suptitle(
+        "Offline augmentation: intensity above, label map below", fontsize=11
+    )
     figure.tight_layout()
     _finalise_figure(figure, save_path)
