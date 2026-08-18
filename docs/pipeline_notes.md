@@ -615,6 +615,108 @@ nel test contro 11,61 % nel train. Su 14 immagini è entro la variabilità attes
 non giustifica una suddivisione stratificata; resta un valore da riguardare se il
 test dovesse comportarsi in modo anomalo.
 
+### Statistiche di canale
+
+Calcolate in una sola passata con somme incrementali in `float64` — somma,
+somma dei quadrati, istogramma a 256 bin per canale — invece di accumulare i
+valori dei pixel. L'implementazione originale raccoglieva ogni pixel in liste
+Python: su questo dataset significa oltre cento milioni di oggetti e diversi
+gigabyte di memoria, per produrre due numeri per canale.
+
+La varianza è ottenuta come `E[x²] - E[x]²`, che richiede una passata sola. La
+cancellazione numerica che rende rischiosa questa forma si manifesta quando la
+deviazione standard è minuscola rispetto alla media; con valori a 8 bit
+accumulati in `float64` il margine è di dieci ordini di grandezza.
+
+**Ordine dei canali in memoria.** OpenCV decodifica le immagini a colori in
+ordine **BGR**. I suffissi in `config` sono stati corretti di conseguenza
+(`depth_B`, `depth_G`, `depth_R`): chiamare `depth_R` il canale 0 sarebbe stata
+documentazione falsa, e avrebbe invitato ad aggiungere una conversione di
+colore che avrebbe applicato a ogni canale le statistiche di un altro.
+
+**Valori misurati sul training set** (92 immagini, partizione `7afaa392`):
+
+| Canale | Media | Dev. std |
+|---|---|---|
+| intensity | 82,61 | 28,10 |
+| depth_B | 84,04 | 118,65 |
+| depth_G | 62,68 | 95,19 |
+| depth_R | 33,97 | 76,95 |
+| confidence | 10,83 | 19,57 |
+
+### Pesi delle classi
+
+Calcolati sulle sole frequenze del training set. Con `sqrt_inverse` e
+normalizzazione al minimo:
+
+| Classe | Quota pixel (train) | Peso |
+|---|---|---|
+| Background | 83,55 % | 1,00 |
+| Cane | 11,61 % | 2,68 |
+| Cordon | 3,58 % | 4,83 |
+| Node | 0,26 % | 18,08 |
+| Other | 1,01 % | 9,11 |
+
+Il rapporto fra la classe più pesante e la più leggera è **18,1×**. Con
+`inverse` sarebbe **327×**: un fattore di quell'ordine rende l'addestramento
+instabile sulle classi rare, perché ogni pixel di `Node` sbagliato pesa quanto
+327 pixel di sfondo e il gradiente viene dominato da poche decine di pixel per
+immagine. È la ragione per cui `sqrt_inverse` resta il metodo predefinito.
+
+**`median_freq` non è un metodo distinto quando la normalizzazione è attiva.**
+Normalizzando si divide ogni peso per il minimo, e il fattore mediana — che è
+una costante — si semplifica: `(med/fᵢ)/(med/f_max) = f_max/fᵢ`, cioè
+esattamente ciò che restituisce `inverse`. I due metodi differiscono solo con
+`normalize=False`. Il metodo resta disponibile ma è escluso dal grafico di
+confronto, dove avrebbe prodotto due serie identiche.
+
+### Natura del canale depth — ritrovamento
+
+Le deviazioni standard dei canali depth sono anomale: 118 su un intervallo
+0–255. Gli istogrammi mostrano il motivo, e l'analisi che ne è seguita ha
+chiarito la natura del dato.
+
+**Il depth è una colorazione JET di uno scalare.** I file contengono circa 1 000
+colori distinti che seguono il percorso blu → ciano → verde → giallo → rosso.
+I tre canali trasportano quindi l'informazione di **una sola grandezza**, e in
+forma non monotona: in JET nessun singolo canale cresce monotonamente con la
+profondità. La rete deve di fatto invertire una colormap prima di poter usare
+la distanza.
+
+**Il 57 % dei pixel non ha profondità valida.** `depth == (0,0,0)` e
+`confidence == 0` identificano gli stessi pixel, con un accordo del 99,97 %:
+sono i punti in cui il sensore ToF non ha ricevuto ritorno. Ne consegue che il
+canale `confidence` è in larga parte **ridondante**, perché la sua informazione
+di validità coincide con quella già presente nel depth; aggiunge qualcosa solo
+attraverso i valori non nulli, la cui mediana è 2 su 255.
+
+**L'invalidità è concentrata sullo sfondo**, il che rende il segnale ToF
+comunque utile:
+
+| Classe | Pixel senza profondità valida |
+|---|---|
+| Background | 67,9 % |
+| Cane | 12,8 % |
+| Cordon | 1,8 % |
+| Node | 0,6 % |
+| Other | 12,7 % |
+
+Il ToF misura quasi ovunque ci siano le strutture da segmentare e tace dove c'è
+sfondo: la presenza stessa di una profondità valida è un indizio di foreground.
+
+**Decisione: la rappresentazione dei dati resta invariata.** Le statistiche di
+normalizzazione continuano a essere calcolate su tutti i pixel, inclusi gli
+zeri dei punti invalidi — sono ciò che il modello riceve in ingresso. I dati
+grezzi in millimetri non sono disponibili, e a un mese dalla consegna il
+percorso che porta a esperimenti conclusi ha priorità su una rappresentazione
+migliore ma da validare.
+
+*Sviluppi possibili, se il tempo lo permettesse:* ricostruire lo scalare
+invertendo la colormap e sostituire i tre canali con profondità più maschera di
+validità — l'ingresso passerebbe da 5 a 3 canali **guadagnando** informazione;
+oppure verificare quanto `confidence` contribuisca davvero, data la ridondanza
+misurata.
+
 ### Sviluppo futuro: eliminazione della classe `Node`
 
 `Node` è la classe più problematica: circa lo 0,3 % dei pixel, e assente da un
