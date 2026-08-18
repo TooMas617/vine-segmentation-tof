@@ -717,6 +717,48 @@ validità — l'ingresso passerebbe da 5 a 3 canali **guadagnando** informazione
 oppure verificare quanto `confidence` contribuisca davvero, data la ridondanza
 misurata.
 
+### Copertura degli scheletri — analisi resa riproducibile
+
+Il confronto fra kernel 2 e kernel 3 documentato nella sezione 2 era stato
+eseguito una volta in modo estemporaneo. È ora una funzione del modulo, che
+ricostruisce gli scheletri **in memoria** per ciascun kernel tramite
+`build_skeleton_map()`: i file scritti dal notebook 01 non vengono né letti né
+sovrascritti. Eseguita sulle 92 immagini riproduce i valori già documentati.
+
+| | kernel 2×2 | kernel 3×3 |
+|---|---|---|
+| copertura media `Cane` | 34,4 % | 53,0 % |
+| copertura massima `Cane` | 56,6 % | **83,7 %** |
+| immagini `Cane` oltre l'80 % | **0** | 3 |
+| copertura media `Cordon` | 13,0 % | 19,9 % |
+| copertura massima `Cordon` | 33,2 % | 50,2 % |
+
+Il `Cordon` non si avvicina alla soglia con nessuno dei due kernel: è una
+struttura più spessa dei tralci, quindi il tubo dello scheletro ne occupa una
+frazione minore. Il vincolo viene interamente dalla classe `Cane`.
+
+Il grafico mostra la distribuzione completa per immagine invece di due barre
+riassuntive, perché la decisione dipende dalla **coda superiore**: un kernel è
+inutilizzabile se alcune immagini superano la soglia, per quanto bene si
+comporti sulle altre.
+
+### Verifiche visive
+
+Due controlli che nessuna metrica sostituisce.
+
+**Campioni con maschera sovrapposta all'immagine.** È l'unica vista in cui un
+disallineamento fra immagine e label map sarebbe visibile a colpo d'occhio.
+
+**Augmentation offline.** Ogni campione di training è mostrato accanto alle sue
+copie ribaltate, immagine sopra ed etichetta sotto, lette da
+`data/augmented/train/`. Un flip applicato all'immagine ma non alla sua
+etichetta sarebbe evidente qui e invisibile in qualunque metrica finché il
+modello non fallisse ad apprendere.
+
+La visualizzazione dell'augmentation **online** non appartiene a questo
+notebook: richiede la classe `Dataset` e la pipeline `albumentations`, che non
+è installabile in locale. Verrà fatta nel notebook 03.
+
 ### Sviluppo futuro: eliminazione della classe `Node`
 
 `Node` è la classe più problematica: circa lo 0,3 % dei pixel, e assente da un

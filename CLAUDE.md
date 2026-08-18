@@ -164,32 +164,26 @@ Full rationale in `docs/pipeline_notes.md`.
 
 ## Status and next steps
 
-Notebook 01 is complete and has run end to end on the full dataset.
+Notebooks 01 and 02 are complete and have run end to end on the full dataset.
+`src/exploration.py` covers all six sections; each carries its own plotting
+function rather than collecting them at the end, and every plot takes a
+`save_path` and shares `_finalise_figure()`.
 
-`src/exploration.py` is under construction, one section at a time:
-
-```
-1 - DATASET INVENTORY      consistency, formats, sample display     done
-2 - CLASS DISTRIBUTION     counts, presence, bar chart              done
-3 - CHANNEL STATISTICS     mean and std per channel, histograms
-4 - CLASS WEIGHTS          computation and saving
-5 - SKELETON COVERAGE      kernel 2 vs 3, skeleton display
-6 - OFFLINE AUGMENTATION   visual check of the flips
-```
-
-Each section carries its own plotting function rather than collecting them at
-the end. Plots take a `save_path` and share `_finalise_figure()`.
+Notebook 02 writes `data/processed/class_weights.json`,
+`data/processed/channel_stats.json` and the figures under
+`results/figures/eda/`. Both JSON files are stamped with the `splits_hash` and
+reload through `config.load_class_weights` / `config.load_channel_stats`.
 
 Next:
 
-1. **Notebook 02 (EDA)** — thin, calls into `exploration.py`. Class weights and
-   channel statistics saved via `config.save_class_weights` and
-   `config.save_channel_stats`, reloaded during training.
-2. **Training modules** — `dataset.py`, `models.py`, `losses.py`, `metrics.py`,
-   extracted from the original monolithic notebook.
-3. **Notebook 03 (Training)** — training loop, per-run experiment folder,
-   automatic logging to `results/experiments.csv`.
-4. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
+1. **Training modules** — `dataset.py`, `models.py`, `losses.py`, `metrics.py`,
+   extracted from the original monolithic notebook. The `Dataset` must read
+   through `data_preparation.read_modality_image`, stack modalities in
+   `config.MODALITY_ORDER`, and normalise with the saved channel statistics.
+2. **Notebook 03 (Training)** — training loop, per-run experiment folder,
+   automatic logging to `results/experiments.csv`. Also the right place for
+   visualising the online augmentation pipeline, which needs the `Dataset`.
+3. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
    comparison table sorted by mean IoU.
 
 Open points are tracked at the end of `docs/pipeline_notes.md`. The most
