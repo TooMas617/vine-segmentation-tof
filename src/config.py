@@ -235,8 +235,11 @@ INPUT_CHANNELS: int = sum(
 # fall out of sync.
 MODALITY_ORDER: Tuple[str, ...] = tuple(MODALITY_CHANNELS)
 
-# Suffixes naming the individual channels of a multi-channel modality.
-_CHANNEL_SUFFIXES: Tuple[str, ...] = ("R", "G", "B")
+# Suffixes naming the individual channels of a multi-channel modality, in the
+# order they occupy in memory. OpenCV decodes colour images as BGR, so channel 0
+# holds blue: naming it "R" would invite a colour conversion that would apply
+# each channel's statistics to a different channel.
+_CHANNEL_SUFFIXES: Tuple[str, ...] = ("B", "G", "R")
 
 
 def build_channel_names(modalities: Optional[Sequence[str]] = None) -> List[str]:

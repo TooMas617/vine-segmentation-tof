@@ -619,3 +619,495 @@ def plot_class_distribution(
 
     figure.tight_layout()
     _finalise_figure(figure, save_path)
+
+
+# =====================================================
+# 3 - CHANNEL STATISTICS
+# =====================================================
+
+# Number of levels an 8-bit channel can take. The histograms are accumulated
+# exactly, one bin per level, rather than binned into ranges.
+_INTENSITY_LEVELS: int = 256
+
+
+def _accumulate_channel_sums(
+    stems: List[str],
+    source_dirs: Dict[str, Path],
+    description: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Walk a set of images once, accumulating what the statistics need.
+
+    Only running totals are kept, never the pixel values themselves: the
+    original implementation collected every pixel into Python lists, which for
+    this dataset means well over a hundred million objects and several
+    gigabytes. Sums, sums of squares and a 256-bin histogram per channel are a
+    few hundred numbers regardless of how many images are read.
+
+    Args:
+        stems: File stems to walk.
+        source_dirs: Mapping returned by get_source_dirs().
+        description: Label shown on the progress bar.
+
+    Returns:
+        Tuple of (totals, squared_totals, histograms, pixels_per_channel).
+        Histograms hold one row per channel and are all zero when the data is
+        not 8-bit, since the accumulator assumes one bin per level.
+
+    Raises:
+        ValueError: If the channels read do not add up to the declared ones.
+    """
+    channel_names = config.build_channel_names()
+    channel_count = len(channel_names)
+
+    totals = np.zeros(channel_count, dtype=np.float64)
+    squared_totals = np.zeros(channel_count, dtype=np.float64)
+    histograms = np.zeros((channel_count, _INTENSITY_LEVELS), dtype=np.int64)
+    pixels_per_channel = 0
+    histograms_valid = True
+
+    for stem in tqdm(stems, desc=description):
+        channel_index = 0
+
+        for modality in config.MODALITY_ORDER:
+            # read_modality_image() raises on a missing or unreadable file, so
+            # a gap cannot leave channel_index behind and shift every later
+            # channel into the wrong accumulator.
+            image = read_modality_image(source_dirs[modality] / f"{stem}.png", modality)
+            planes = image[:, :, np.newaxis] if image.ndim == 2 else image
+
+            if modality == config.MODALITY_ORDER[0]:
+                pixels_per_channel += planes.shape[0] * planes.shape[1]
+
+            for plane_index in range(planes.shape[2]):
+                plane = planes[:, :, plane_index]
+                as_float = plane.astype(np.float64)
+
+                totals[channel_index] += as_float.sum()
+                squared_totals[channel_index] += np.square(as_float).sum()
+
+                if plane.dtype == np.uint8:
+                    histograms[channel_index] += np.bincount(
+                        plane.ravel(), minlength=_INTENSITY_LEVELS
+                    )
+                else:
+                    histograms_valid = False
+
+                channel_index += 1
+
+        if channel_index != channel_count:
+            raise ValueError(
+                f"{stem} yielded {channel_index} channel(s) but "
+                f"{channel_count} are declared: {channel_names}"
+            )
+
+    if not histograms_valid:
+        histograms = np.zeros_like(histograms)
+
+    return totals, squared_totals, histograms, pixels_per_channel
+
+
+def _summarise_channel_sums(
+    totals: np.ndarray,
+    squared_totals: np.ndarray,
+    histograms: np.ndarray,
+    pixels_per_channel: int,
+) -> Dict[str, Any]:
+    """Turn running totals into per-channel mean and standard deviation.
+
+    The variance comes from E[x²] - E[x]², which needs a single pass where the
+    textbook formula needs two. The cancellation that makes this form risky
+    only bites when the standard deviation is minute next to the mean; with
+    8-bit values accumulated in float64 there are ten orders of magnitude to
+    spare. The clamp at zero guards the remaining rounding noise.
+
+    Args:
+        totals: Sum of the values of each channel.
+        squared_totals: Sum of the squared values of each channel.
+        histograms: Value histogram of each channel, or zeros if unavailable.
+        pixels_per_channel: Pixels each channel contributed.
+
+    Returns:
+        Dictionary with "means", "stds", "histograms" and "pixels_per_channel".
+    """
+    means = totals / pixels_per_channel
+    variances = np.maximum(squared_totals / pixels_per_channel - np.square(means), 0.0)
+
+    return {
+        "means": means,
+        "stds": np.sqrt(variances),
+        "histograms": histograms,
+        "pixels_per_channel": pixels_per_channel,
+    }
+
+
+def compute_channel_statistics(
+    splits: Optional[Dict[str, List[str]]] = None,
+    verbose: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """Measure the per-channel mean and standard deviation used to normalise.
+
+    Every modality declared in config.MODALITY_CHANNELS is measured, whether or
+    not it is currently enabled: the statistics describe the data, not the
+    experiment, so turning a modality back on later can never find a file that
+    has no values for it. Channels follow config.MODALITY_ORDER, the order the
+    Dataset will stack them in.
+
+    Reported for all four groups. Only the training values are meant to be
+    saved, through config.save_channel_stats(): normalisation is applied to the
+    model's input, so statistics drawn from validation or test would carry
+    information about them into training. The other groups are descriptive, and
+    a marked difference between them would point at drift between acquisition
+    batches rather than at a coding mistake.
+
+    Args:
+        splits: Mapping from split name to file stems. Defaults to the split
+            saved by notebook 01.
+        verbose: If True, print the mean and standard deviation tables.
+
+    Returns:
+        Mapping from group name to the summary returned by
+        _summarise_channel_sums().
+
+    Raises:
+        ValueError: Propagated from read_modality_image() when a file is
+            unreadable or contradicts config.MODALITY_CHANNELS.
+    """
+    if splits is None:
+        splits = load_splits()
+
+    source_dirs = get_source_dirs()
+    statistics: Dict[str, Dict[str, Any]] = {}
+
+    accumulated: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, int]] = {}
+
+    for split_name in SPLIT_NAMES:
+        accumulated[split_name] = _accumulate_channel_sums(
+            stems=splits[split_name],
+            source_dirs=source_dirs,
+            description=f"Measuring {split_name}",
+        )
+        statistics[split_name] = _summarise_channel_sums(*accumulated[split_name])
+
+    # Summed from the partitions rather than measured again, so the images are
+    # read once and the whole is guaranteed consistent with its parts.
+    statistics["overall"] = _summarise_channel_sums(
+        totals=np.sum([accumulated[name][0] for name in SPLIT_NAMES], axis=0),
+        squared_totals=np.sum([accumulated[name][1] for name in SPLIT_NAMES], axis=0),
+        histograms=np.sum([accumulated[name][2] for name in SPLIT_NAMES], axis=0),
+        pixels_per_channel=sum(accumulated[name][3] for name in SPLIT_NAMES),
+    )
+
+    if verbose:
+        _print_channel_statistics(statistics)
+
+    return statistics
+
+
+def _print_channel_statistics(statistics: Dict[str, Dict[str, Any]]) -> None:
+    """Print the mean and standard deviation of every channel, group by group.
+
+    Args:
+        statistics: Mapping returned by compute_channel_statistics().
+    """
+    separator = "=" * 70
+    channel_names = config.build_channel_names()
+    header = "".join(f"{group:>11}" for group in DISTRIBUTION_GROUPS)
+
+    print(separator)
+    print("CHANNEL STATISTICS")
+    print(separator)
+    print("Every modality is measured, enabled or not. Channel order follows")
+    print(f"config.MODALITY_ORDER: {list(config.MODALITY_ORDER)}")
+    print()
+
+    for statistic, label in (("means", "Mean"), ("stds", "Standard deviation")):
+        print(f"  {label}\n  {'channel':<12}{header}")
+        for channel_index, channel_name in enumerate(channel_names):
+            values = "".join(
+                f"{statistics[group][statistic][channel_index]:>11.2f}"
+                for group in DISTRIBUTION_GROUPS
+            )
+            print(f"  {channel_name:<12}{values}")
+        print()
+
+    print("Only the 'train' column is meant to be saved: normalisation feeds the")
+    print("model, so validation and test must not contribute to it.")
+    print(separator)
+
+
+def plot_channel_histograms(
+    statistics: Dict[str, Dict[str, Any]],
+    save_path: Optional[Path] = None,
+    columns: int = 3,
+) -> None:
+    """Draw the value distribution of every channel, one panel per channel.
+
+    Each panel overlays the three splits. The counts are turned into densities
+    first, since the splits hold very different numbers of images and the raw
+    counts would differ by a factor of five for reasons that say nothing about
+    the data.
+
+    Mean and standard deviation summarise a distribution only as far as it is
+    unimodal; these panels show what the two numbers hide — clipping at the
+    ends of the range, or a second mode, both plausible in a confidence channel.
+
+    Args:
+        statistics: Mapping returned by compute_channel_statistics().
+        save_path: Destination file for the figure, or None to only display it.
+        columns: Panels per row.
+
+    Raises:
+        ValueError: If the histograms were not accumulated, which happens when
+            the data is not 8-bit.
+    """
+    channel_names = config.build_channel_names()
+
+    if not statistics["overall"]["histograms"].any():
+        raise ValueError(
+            "No histogram available: the accumulator assumes 8-bit channels. "
+            "Mean and standard deviation are unaffected."
+        )
+
+    rows = -(-len(channel_names) // columns)  # ceiling division
+    figure, axes = plt.subplots(
+        rows, columns, figsize=(4.2 * columns, 2.8 * rows), squeeze=False
+    )
+    flat_axes = axes.flatten()
+
+    levels = np.arange(_INTENSITY_LEVELS)
+
+    for channel_index, channel_name in enumerate(channel_names):
+        axis = flat_axes[channel_index]
+
+        for split_name in SPLIT_NAMES:
+            counts = statistics[split_name]["histograms"][channel_index]
+            density = counts / counts.sum() if counts.sum() else counts
+            axis.plot(
+                levels,
+                density,
+                label=split_name,
+                color=SPLIT_COLORS[split_name],
+                linewidth=1.2,
+            )
+
+        mean = statistics["train"]["means"][channel_index]
+        axis.axvline(mean, color="#52514e", linewidth=0.9, linestyle="--")
+
+        axis.set_title(channel_name, fontsize=10)
+        axis.set_xlim(0, _INTENSITY_LEVELS - 1)
+        axis.set_yticks([])
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        axis.spines["left"].set_visible(False)
+
+    # Panels left over when the channels do not fill the grid.
+    for empty_axis in flat_axes[len(channel_names):]:
+        empty_axis.set_visible(False)
+
+    flat_axes[0].legend(frameon=False, fontsize=8)
+    figure.suptitle(
+        "Channel value distribution (dashed line: training mean)", fontsize=11
+    )
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
+
+
+# =====================================================
+# 4 - CLASS WEIGHTS
+# =====================================================
+
+# Methods worth putting side by side. "none" is flat by construction, and
+# "median_freq" is excluded because under normalisation it is not a distinct
+# method: dividing by the smallest weight cancels the median factor, so it
+# returns exactly what "inverse" returns. Plotting both would show two
+# identical series and read as a bug.
+_COMPARABLE_METHODS: Tuple[str, ...] = ("sqrt_inverse", "inverse")
+
+# Categorical colours for the method comparison, from the same validated
+# subset used for the splits.
+_METHOD_COLORS: Dict[str, str] = {
+    "sqrt_inverse": "#2a78d6",
+    "inverse": "#eb6834",
+    "median_freq": "#1baf7a",
+}
+
+
+def compute_class_weights(
+    class_frequencies: np.ndarray,
+    method: Optional[str] = None,
+    normalize: Optional[bool] = None,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Turn class frequencies into the weights the loss applies to each class.
+
+    Weighting exists because the classes differ by more than two orders of
+    magnitude: without it the loss is dominated by Background, and a model that
+    predicts Background everywhere already scores well. A weight raises the cost
+    of an error on a rare class in proportion to how rare it is.
+
+    The frequencies must come from the training split alone. They describe the
+    data the model is fitted on, and drawing them from the whole dataset would
+    carry validation and test information into the loss.
+
+    Available methods, from mildest to harshest:
+
+        sqrt_inverse  1 / sqrt(f)      the default
+        inverse       1 / f
+        median_freq   median(f) / f
+        none          uniform
+
+    Note:
+        With normalize=True, "median_freq" and "inverse" return the same
+        weights: the median is a constant factor and cancels when every weight
+        is divided by the smallest one. The two differ only when normalisation
+        is switched off.
+
+    Args:
+        class_frequencies: Pixel share of each class, shape (NUM_CLASSES,).
+        method: Weighting method. Defaults to config.CLASS_WEIGHT_CONFIG.
+        normalize: If True, divide by the smallest weight so the mildest class
+            weighs exactly 1 and the others are read as multiples of it.
+            Defaults to config.CLASS_WEIGHT_CONFIG.
+        verbose: If True, print the frequency and weight of every class.
+
+    Returns:
+        Array of shape (NUM_CLASSES,) with one weight per class.
+
+    Raises:
+        ValueError: If the method is unknown, the frequencies do not hold one
+            value per class, or a class has zero frequency.
+    """
+    if method is None:
+        method = config.CLASS_WEIGHT_CONFIG["method"]
+    if normalize is None:
+        normalize = config.CLASS_WEIGHT_CONFIG["normalize"]
+
+    if len(class_frequencies) != config.NUM_CLASSES:
+        raise ValueError(
+            f"Expected {config.NUM_CLASSES} frequencies, one per class, "
+            f"got {len(class_frequencies)}"
+        )
+
+    # Every method except "none" divides by the frequency, so an absent class
+    # would produce an infinite weight and poison the loss on the first batch.
+    absent = [
+        config.CLASS_NAMES[index]
+        for index, frequency in enumerate(class_frequencies)
+        if frequency <= 0
+    ]
+    if absent and method != "none":
+        raise ValueError(
+            f"Class(es) {absent} have zero frequency in the split the weights "
+            f"are computed from, so method '{method}' would divide by zero."
+        )
+
+    frequencies = np.asarray(class_frequencies, dtype=np.float64)
+
+    if method == "sqrt_inverse":
+        weights = 1.0 / np.sqrt(frequencies)
+    elif method == "inverse":
+        weights = 1.0 / frequencies
+    elif method == "median_freq":
+        weights = np.median(frequencies) / frequencies
+    elif method == "none":
+        weights = np.ones_like(frequencies)
+    else:
+        raise ValueError(
+            f"Unknown class weighting method '{method}'. Available: "
+            "'sqrt_inverse', 'inverse', 'median_freq', 'none'"
+        )
+
+    if normalize:
+        weights = weights / weights.min()
+
+    if verbose:
+        _print_class_weights(frequencies, weights, method, bool(normalize))
+
+    return weights
+
+
+def _print_class_weights(
+    class_frequencies: np.ndarray,
+    weights: np.ndarray,
+    method: str,
+    normalize: bool,
+) -> None:
+    """Print the frequency and the resulting weight of every class.
+
+    Args:
+        class_frequencies: Pixel share of each class.
+        weights: Weight computed for each class.
+        method: Weighting method used.
+        normalize: Whether the weights were divided by the smallest one.
+    """
+    separator = "=" * 70
+
+    print(separator)
+    print("CLASS WEIGHTS")
+    print(separator)
+    print(f"Method:    {method}")
+    print(f"Normalise: {normalize}")
+    print("Computed on the training split only.")
+    print()
+    print(f"  {'class':<12}{'pixel share':>14}{'weight':>10}")
+
+    for class_index, class_name in enumerate(config.CLASS_NAMES):
+        share = 100 * class_frequencies[class_index]
+        print(f"  {class_name:<12}{share:>13.2f}%{weights[class_index]:>10.2f}")
+
+    print()
+    print(f"Ratio between the heaviest and the lightest class: {weights.max() / weights.min():.1f}x")
+    print(separator)
+
+
+def plot_class_weight_methods(
+    class_frequencies: np.ndarray,
+    save_path: Optional[Path] = None,
+    figure_size: Tuple[float, float] = (8.0, 4.0),
+) -> None:
+    """Compare what each weighting method would produce on this dataset.
+
+    The figure exists to justify the choice of method rather than to explore:
+    the three curves differ by more than an order of magnitude on the rarest
+    class, and the scale of that gap is the whole argument.
+
+    The vertical axis is logarithmic. On a linear axis the `inverse` bars would
+    flatten everything else into the baseline, which is exactly the property
+    being illustrated and would therefore become invisible.
+
+    Args:
+        class_frequencies: Pixel share of each class, shape (NUM_CLASSES,).
+        save_path: Destination file for the figure, or None to only display it.
+        figure_size: Size of the figure in inches.
+
+    Raises:
+        ValueError: Propagated from compute_class_weights().
+    """
+    figure, axis = plt.subplots(figsize=figure_size)
+
+    bar_width = 0.26
+    positions = np.arange(config.NUM_CLASSES)
+
+    for offset, method in enumerate(_COMPARABLE_METHODS):
+        weights = compute_class_weights(class_frequencies, method=method, verbose=False)
+        axis.bar(
+            positions + (offset - 1) * bar_width,
+            weights,
+            width=bar_width * 0.92,
+            label=method,
+            color=_METHOD_COLORS[method],
+        )
+
+    axis.set_yscale("log")
+    axis.set_xticks(positions)
+    axis.set_xticklabels(config.CLASS_NAMES)
+    axis.set_ylabel("Weight (log scale, lightest class = 1)")
+    axis.set_title("Class weight by method", fontsize=10)
+    axis.legend(frameon=False, fontsize=9)
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.grid(axis="y", color="#d8d7d2", linewidth=0.6)
+    axis.set_axisbelow(True)
+
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)

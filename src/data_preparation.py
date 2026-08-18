@@ -1110,6 +1110,40 @@ def load_splits() -> Dict[str, List[str]]:
     return {name: splits[name] for name in SPLIT_NAMES}
 
 
+def get_splits_hash() -> str:
+    """Return the fingerprint of the split currently on disk.
+
+    The value is recomputed from the partition itself rather than read from the
+    metadata block, so a splits.json edited by hand reports the hash of what it
+    actually contains. A disagreement with the recorded value is reported: it
+    means the file was modified after being written.
+
+    Callers pass this to config.save_class_weights() and
+    config.save_channel_stats(), which stamp it into the values they persist so
+    a later run can tell whether those values describe the split in use.
+
+    Returns:
+        First 8 hexadecimal characters of the MD5 digest of the partition.
+
+    Raises:
+        FileNotFoundError: If the split has not been created yet.
+    """
+    splits = load_splits()
+    actual_hash = _compute_splits_hash(splits)
+
+    with open(get_splits_path(), "r", encoding="utf-8") as file:
+        recorded_hash = json.load(file).get("metadata", {}).get("splits_hash")
+
+    if recorded_hash is not None and recorded_hash != actual_hash:
+        print(
+            f"[WARNING] {SPLITS_FILENAME} records hash '{recorded_hash}' but its "
+            f"partition hashes to '{actual_hash}'.\n"
+            "          The file was edited after being written; using the actual value."
+        )
+
+    return actual_hash
+
+
 def _print_splits_summary(splits: Dict[str, List[str]], seed: int) -> None:
     """Print the size of each partition.
 
