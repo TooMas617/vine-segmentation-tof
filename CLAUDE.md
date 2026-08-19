@@ -176,18 +176,20 @@ The reference papers for clDice and the Skeleton Recall Loss live in
 every deviation from them and the reasoning, and should be read before
 touching either module.
 
+`models.py` implements U-Net (31 M parameters), SegNet (7 M) and PSPNet (14 M),
+all in plain PyTorch and trained from scratch, so
+`segmentation_models_pytorch` is not a dependency and the models can be checked
+locally. `UNetPlusPlus` is named in `config.ARCHITECTURE` but is deliberately
+not implemented. The whole chain — dataloader, model, loss, metrics — has been
+run end to end on real samples.
+
 Next:
 
-1. **`models.py`** — U-Net, U-Net++, SegNet, PSPNet, from cells 20–31 of the
-   original notebook. Encoders are trained from scratch: a pre-trained
-   backbone expects three RGB channels while the input here is five
-   heterogeneous ones, so the transfer would only apply to intensity. See
-   section 8 of the notes.
-2. **Notebook 03 (Training)** — training loop, per-run experiment folder,
+1. **Notebook 03 (Training)** — training loop, per-run experiment folder,
    automatic logging to `results/experiments.csv`. Also the right place for
    visualising the online augmentation pipeline, which needs the `Dataset`.
-3. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
-   comparison table sorted by mean IoU.
+2. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
+   comparison table.
 
 The experiments must include an **ablation with and without the skeleton
 recall loss**. Theory predicts it trades precision for recall, and the model

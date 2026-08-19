@@ -1209,6 +1209,57 @@ i canali usano le statistiche del dataset misurate in sezione 5. La modalità
 mista resta implementata in `dataset.py` ma non viene usata, ed esiste solo per
 il caso in cui si volesse riconsiderare la scelta.
 
+*Conseguenza sulle dipendenze.* Non serve `segmentation_models_pytorch`: quella
+libreria dà valore soprattutto attraverso i backbone pre-addestrati, che qui
+non si usano. Le tre architetture sono implementate in PyTorch puro, quindi
+sono verificabili in locale senza GPU e senza installare nulla.
+
+### Le tre architetture messe a confronto
+
+`UNetPlusPlus` compare in `config.ARCHITECTURE` ma non è implementata: il
+confronto è fra tre architetture che rispondono in modo diverso alla stessa
+domanda, non fra quattro varianti della stessa idea.
+
+| | Parametri | Peso | Come propaga il dettaglio |
+|---|---|---|---|
+| U-Net | 31,0 M | 118 MB | connessioni skip: il decoder riceve le mappe a piena risoluzione |
+| SegNet | 7,1 M | 27 MB | solo gli **indici** di pooling, non le mappe |
+| PSPNet | 14,2 M | 54 MB | contesto multi-scala, risoluzione fermata a H/8 |
+
+**U-Net** è la scelta abituale per strutture sottili: le connessioni skip
+portano al decoder le feature che l'encoder aveva prima del pooling, quindi un
+tralcio largo pochi pixel non va ricostruito da una mappa in cui è ridotto a un
+punto.
+
+**SegNet** trasporta solo la posizione in cui ciascun max-pooling ha scelto il
+suo valore, e la riusa in fase di unpooling. Costa un quarto dei parametri di
+U-Net, ma il decoder deve ricostruire il contenuto da una mappa sparsa. È
+architettura consolidata in questo dominio — usata per la segmentazione di
+tronchi, rami e fili di sostegno in meleto e in viticoltura — e il confronto
+serve a stabilire se gli indici da soli bastino su strutture di pochi pixel.
+
+**PSPNet** aggrega contesto a più scale, utile quando una classe è definita dal
+suo ruolo nella scena più che dall'aspetto locale: un cordone si distingue da un
+tralcio soprattutto per posizione e continuità.
+
+*Limite noto di PSPNet su questo problema.* Il classificatore lavora a **H/8** e
+il risultato viene riportato a piena risoluzione con una singola interpolazione
+bilineare. A 512×512 la mappa più fine è 64×64: un tralcio largo otto pixel vi
+occupa **un solo pixel**, e il suo contorno non è predetto ma interpolato. È
+prevedibile che PSPNet collochi le strutture correttamente e sia la meno precisa
+delle tre sui bordi — cioè esattamente la distinzione che clDice e IoU insieme
+sono state scelte per separare (sezione 7.5). Se il confronto lo confermasse,
+sarebbe una conferma indipendente della scelta delle metriche.
+
+### Verifica prima della GPU
+
+`test_model()` esegue un forward **e un backward** su un tensore fittizio delle
+dimensioni configurate, e riporta il picco di memoria quando gira su CUDA. Il
+backward è incluso di proposito: è lì che la memoria raggiunge il massimo, e un
+modello che fa forward senza problemi può comunque esaurire la GPU quando
+vengono allocati i gradienti. Uno scarto di forma trovato in locale costa
+secondi, lo stesso scarto trovato su Colab costa una sessione.
+
 ---
 
 ## Riepilogo delle questioni aperte
