@@ -1128,6 +1128,47 @@ ortogonali, e vanno riportate insieme.
 sovrasegmentare i tralci rispetto all'annotazione. Quel difetto si manifesta su
 IoU e precisione e **non comparirà in clDice**.
 
+**Ed è proprio questa la ragione per cui clDice serve.** Le due metriche vanno
+riportate e lette **insieme**: nessuna delle due, da sola, distingue un errore
+di *topologia* da un errore di *raggio*.
+
+Un IoU basso accompagnato da un clDice alto non è un risultato contraddittorio
+né un fallimento: dice che il modello ha **individuato correttamente la
+struttura** e sbaglia sui bordi. È un'informazione diagnostica, non una
+scusante — ma permette di non scartare una configurazione che sul compito reale
+funziona.
+
+*Perché l'IoU ha un tetto su questo problema.* Tre fattori lo comprimono
+indipendentemente dalla qualità del modello:
+
+- le strutture sono **sottili e numerose**, quindi la frazione di pixel di
+  bordo sul totale della classe è alta: uno scarto di un pixel su un tralcio
+  largo dieci costa il 10 % di IoU, contro il 2 % su una struttura larga
+  cinquanta
+- le **occlusioni** frammentano ciò che è visibile, e la label map registra
+  solo la parte visibile
+- l'**annotazione manuale è essa stessa incerta sui bordi**: collocare il
+  contorno di un tralcio sottile a livello di pixel è difficile anche per un
+  operatore umano, come conferma la differenza di precisione dei margini fra le
+  due convenzioni di annotazione documentata nella sezione 1
+
+Il terzo punto è il più rilevante da dichiarare in tesi: parte dello scarto di
+IoU non misura l'errore del modello ma il **rumore dell'etichetta**. clDice, che
+dipende dalla linea centrale e non dal contorno, è molto meno sensibile a
+quell'incertezza, ed è quindi la metrica su cui il confronto fra
+configurazioni resta più stabile.
+
+*Rilevanza per l'applicazione.* L'obiettivo finale è la potatura automatica: un
+tralcio non riconosciuto porta a un taglio mancato o sbagliato, un tralcio con
+margini leggermente gonfiati è un'imprecisione geometrica assorbibile a valle.
+Ne segue che l'ipotesi della sezione 7.6 — se confermata — descriverebbe un
+compromesso **accettabile** per questo caso d'uso, non un peggioramento.
+
+*Conseguenza sul confronto fra run.* `MONITOR_METRIC` è `mean_iou_no_bg`. La
+scelta va mantenuta o cambiata consapevolmente, non per inerzia: la tabella
+comparativa finale deve riportare IoU, clDice, precisione e recall per classe,
+e il criterio con cui le run vengono ordinate va dichiarato esplicitamente.
+
 ### 7.6 Previsione da verificare sperimentalmente
 
 Mettendo insieme 7.4 e 7.5 si ottiene un'ipotesi falsificabile: poiché la SRL
@@ -1197,6 +1238,7 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 | 8 | Riannotazione del campione escluso e revisione delle annotazioni esistenti | All'ampliamento del dataset a ~100 immagini |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
+| 13 | Criterio di ordinamento della tabella comparativa e scelta di `MONITOR_METRIC` — sezione 7.5 | Prima degli esperimenti definitivi |
 
 ---
 
