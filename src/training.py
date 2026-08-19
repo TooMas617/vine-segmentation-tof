@@ -195,6 +195,7 @@ def load_checkpoint(
     optimizer: Optional[torch.optim.Optimizer] = None,
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     device: Optional[torch.device] = None,
+    expected_architecture: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Restore a checkpoint into the objects given.
 
@@ -204,6 +205,10 @@ def load_checkpoint(
         optimizer: Optimiser to restore, or None to skip.
         scheduler: Scheduler to restore, or None to skip.
         device: Device to map the tensors onto. Defaults to config.DEVICE.
+        expected_architecture: Architecture the model was built as. Defaults to
+            config.ARCHITECTURE, which is what a training run wants. Evaluation
+            compares runs of several architectures, so it passes the one the
+            run itself recorded.
 
     Returns:
         The checkpoint dictionary, so the caller can read the epoch and history.
@@ -215,15 +220,18 @@ def load_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
+    if expected_architecture is None:
+        expected_architecture = config.ARCHITECTURE
+
     checkpoint = torch.load(
         path, map_location=config.DEVICE if device is None else device, weights_only=False
     )
 
     stored_architecture = checkpoint.get("architecture")
-    if stored_architecture is not None and stored_architecture != config.ARCHITECTURE:
+    if stored_architecture is not None and stored_architecture != expected_architecture:
         raise ValueError(
-            f"Checkpoint holds a '{stored_architecture}' but config.ARCHITECTURE "
-            f"is '{config.ARCHITECTURE}'. Loading it would silently mismatch the weights."
+            f"Checkpoint holds a '{stored_architecture}' but the model given is a "
+            f"'{expected_architecture}'. Loading it would silently mismatch the weights."
         )
 
     model.load_state_dict(checkpoint["model_state_dict"])
