@@ -1570,3 +1570,70 @@ def show_offline_augmentation(
     )
     figure.tight_layout()
     _finalise_figure(figure, save_path)
+
+
+def show_augmented_batch(
+    dataloader: Any,
+    n_samples: int = 3,
+    save_path: Optional[Path] = None,
+) -> None:
+    """Display what the online pipeline actually hands the model.
+
+    Takes one batch from a dataloader and shows the intensity channel next to
+    the label and skeleton maps that came with it. Everything upstream is
+    verifiable by reading the code; this is the only place where the *result*
+    of the random geometric pipeline is visible.
+
+    What it is for: a transform applied to the image but not to its masks
+    leaves the labels describing pixels that have moved. No metric would report
+    that — the model would simply fail to learn, weeks later and for no
+    apparent reason.
+
+    Belongs to notebook 03 rather than 02 because it needs the Dataset and the
+    albumentations pipeline, which is not installable on the local machine.
+
+    Args:
+        dataloader: Loader whose dataset carries a transform.
+        n_samples: How many samples of the batch to display.
+        save_path: Destination file for the figure, or None to only display it.
+
+    Raises:
+        ValueError: If the loader yields an empty batch.
+    """
+    images, labels, skeletons = next(iter(dataloader))
+
+    if images.shape[0] == 0:
+        raise ValueError("The dataloader produced an empty batch")
+
+    n_samples = min(n_samples, images.shape[0])
+
+    figure, axes = plt.subplots(
+        n_samples, 3, figsize=(11, 3.2 * n_samples), squeeze=False
+    )
+
+    for row in range(n_samples):
+        # Channel 0 is intensity whenever it is enabled, and the values are
+        # standardised: matplotlib rescales them for display, so what is shown
+        # is relative contrast rather than the original grey levels.
+        intensity = images[row, 0].cpu().numpy()
+        label_map = labels[row].cpu().numpy().astype(np.uint8)
+        skeleton = skeletons[row].cpu().numpy().astype(np.uint8)
+
+        for column, (image, title, kwargs) in enumerate(
+            (
+                (intensity, "intensity (normalised)", {"cmap": "gray"}),
+                (label_map_to_colored_mask(label_map, config.CLASS_COLORS), "label map", {}),
+                (build_skeleton_overlay(label_map, skeleton), "skeleton over label", {}),
+            )
+        ):
+            axis = axes[row][column]
+            axis.imshow(image, **kwargs)
+            axis.axis("off")
+            if row == 0:
+                axis.set_title(title, fontsize=10)
+
+    figure.suptitle(
+        f"One batch as the model receives it — {tuple(images.shape)}", fontsize=11
+    )
+    figure.tight_layout()
+    _finalise_figure(figure, save_path)
