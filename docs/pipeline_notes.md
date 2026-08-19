@@ -1407,6 +1407,67 @@ vuote invece di fallire o di far sparire la colonna.
 
 ---
 
+## 10. Valutazione (`evaluation.py`)
+
+**Input:** cartelle delle run, `experiments.csv`.
+**Output:** figure per la tesi, tabella comparativa.
+
+### Scelte
+
+**Ogni run viene ricostruita dal proprio `config.json`**, non dalla
+configurazione corrente. Il senso di confrontare più run è che differiscono:
+leggere `config.ARCHITECTURE` al momento del caricamento ricostruirebbe la rete
+sbagliata. `load_checkpoint()` verifica comunque che l'architettura del
+checkpoint coincida con quella del modello ricevuto.
+
+**Le run misurate su una partizione diversa sono nascoste dalla tabella.**
+Metriche prodotte su split diversi non sono confrontabili, e mescolarle in
+un'unica tabella porta esattamente alla conclusione sbagliata. Il campo
+`splits_hash` registrato in ogni riga è ciò che rende possibile il controllo.
+
+### La mappa degli errori
+
+I punteggi di sovrapposizione dicono **quanto** una predizione sbaglia, non
+**come**. La mappa colora ogni pixel secondo il tipo di errore:
+
+| Colore | Significato |
+|---|---|
+| grigio | struttura trovata e classificata correttamente |
+| **rosso** | struttura predetta dove non c'è — falso positivo |
+| **blu** | struttura presente e non trovata |
+| giallo | struttura trovata ma assegnata a un'altra classe |
+
+*Perché conta qui.* Distinguere il rosso dal blu separa due modi di fallire con
+lo stesso IoU e conseguenze molto diverse per la potatura: un tralcio gonfiato
+è un'imprecisione geometrica, un tralcio mancato è un taglio sbagliato. La
+firma attesa della sovrasegmentazione già osservata è un **alone rosso che
+segue le strutture vere**, non macchie rosse lontane da esse — cioè bordi
+dilatati, non tralci inventati.
+
+**I casi peggiori accanto ai campioni medi.** `worst_samples()` ordina per IoU
+per immagine: la media nasconde le debolezze sistematiche, i fallimenti le
+mostrano, e una figura di tesi dovrebbe essere onesta su questo.
+
+### Confronto per classe
+
+La media sulle classi nasconde quelle che contano: `Background` è l'84 % dei
+pixel ed è facile, `Node` è lo 0,27 % ed è difficile. Una run può guidare la
+media perdendo entrambe le classi sottili che sono l'oggetto del problema.
+
+`plot_class_comparison()` traccia una metrica per classe con una barra per run.
+Precisione e recall vanno lette **in coppia**: se la Skeleton Recall Loss si
+comporta come previsto nella sezione 7.6, l'effetto compare come precisione in
+calo su `Cane` e `Cordon` con recall stabile o in crescita.
+
+*Ordinamento della tabella.* Il criterio va **dichiarato**, non assunto.
+Ordinare per mean IoU è una scelta fra le tante e per la potatura non è
+ovviamente quella giusta. Il notebook mostra di proposito la stessa tabella
+ordinata per IoU e per clDice: se l'ordine cambia, le due metriche non
+concordano su quale run sia migliore, e questo è un risultato da discutere, non
+un problema da nascondere.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte

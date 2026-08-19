@@ -189,12 +189,14 @@ stopping and the results row. Each run writes `experiments/<run_id>/` and one
 of 72 columns into `results/experiments.csv`, stamped with the git commit and
 the `splits_hash`.
 
-Next:
+`evaluation.py` and notebook 04 rebuild a finished run from its own
+`config.json`, predict the test split, and produce the error maps and the
+cross-run comparison. All four notebooks and all eight modules are written and
+exercised locally.
 
-1. **Run the experiments on Colab.** Three architectures at matched capacity,
-   plus the ablation with and without the skeleton recall loss.
-2. **Notebook 04 (Evaluation)** — prediction visualisation and the comparison
-   table across runs.
+Next: **run the experiments on Colab.** Three architectures at matched
+capacity, plus the ablation with and without the skeleton recall loss. Nothing
+further needs writing to start.
 
 The experiments must include an **ablation with and without the skeleton
 recall loss**. Theory predicts it trades precision for recall, and the model
