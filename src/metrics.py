@@ -111,6 +111,10 @@ class ConfusionMatrix:
         pred_labels = pred_labels.detach().to(self.device).reshape(-1)
         targets = targets.detach().to(self.device).reshape(-1)
 
+        # Reading a maximum off the device costs a synchronisation, so it is
+        # done once per batch rather than per class. Without it an out-of-range
+        # label would surface as a reshape failure further down, whose message
+        # says nothing about labels.
         if int(pred_labels.max()) >= self.num_classes or int(targets.max()) >= self.num_classes:
             raise ValueError(
                 f"Labels outside the {self.num_classes} declared classes: "
@@ -118,7 +122,7 @@ class ConfusionMatrix:
             )
 
         # One flat histogram over the pairs, reshaped into the matrix: a single
-        # kernel launch, no synchronisation with the host.
+        # kernel launch, and nothing transferred to the host until compute().
         pair_index = targets * self.num_classes + pred_labels
         counts = torch.bincount(pair_index, minlength=self.num_classes**2)
 
@@ -127,13 +131,17 @@ class ConfusionMatrix:
     def compute(self) -> Dict[str, Any]:
         """Derive every metric from the accumulated counts.
 
+        Note:
+            Per-class accuracy is not reported separately: on a pixel-wise
+            multiclass problem it equals the recall of that class, and carrying
+            both would put five duplicate columns into the results table.
+
         Returns:
             Dictionary with the per-class arrays "class_iou", "class_dice",
-            "class_precision", "class_recall" and "class_accuracy", their means
-            "mean_iou", "mean_iou_no_bg", "mean_dice", "mean_precision",
-            "mean_recall" and "mean_class_accuracy", and "pixel_accuracy".
-            Per-class entries are NaN where the class appears in neither the
-            targets nor the predictions.
+            "class_precision" and "class_recall", their means "mean_iou",
+            "mean_iou_no_bg", "mean_dice", "mean_dice_no_bg", "mean_precision"
+            and "mean_recall", and "pixel_accuracy". Per-class entries are NaN
+            where the class appears in neither the targets nor the predictions.
         """
         matrix = self.matrix.double().cpu().numpy()
 
@@ -170,12 +178,10 @@ class ConfusionMatrix:
             "mean_dice_no_bg": _nanmean(class_dice[1:]),
             "mean_precision": _nanmean(class_precision),
             "mean_recall": _nanmean(class_recall),
-            "mean_class_accuracy": _nanmean(class_recall),
             "class_iou": class_iou.tolist(),
             "class_dice": class_dice.tolist(),
             "class_precision": class_precision.tolist(),
             "class_recall": class_recall.tolist(),
-            "class_accuracy": class_recall.tolist(),
         }
 
     def print_report(self, title: str = "METRICS") -> None:

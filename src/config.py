@@ -19,6 +19,7 @@ import importlib
 import json
 import os
 import random
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -385,7 +386,7 @@ EARLY_STOPPING_CONFIG: Dict[str, Any] = {
 ARCHITECTURE: str = "UNet"
 
 # Width of each architecture, picked so the three end up with comparable
-# capacity — 7.1, 7.1 and 8.0 million parameters, a spread of 13 %.
+# capacity — 7.76, 7.09 and 8.02 million parameters, a spread of 13 %.
 #
 # At their natural widths they differ by a factor of four, and a comparison run
 # that way would confound architecture with size: if U-Net won, there would be
@@ -628,8 +629,11 @@ OPTIMIZER_CONFIG: Dict[str, Any] = {
 
 SCHEDULER_CONFIG: Dict[str, Any] = {
     "type": "reduce_on_plateau",  # ["reduce_on_plateau", "cosine", "step", "none"]
-    # Used only for ReduceLROnPlateau
-    "mode": "min",
+    # Used only for ReduceLROnPlateau. Its direction is NOT declared here: the
+    # scheduler steps on MONITOR_METRIC, so it must follow MONITOR_MODE, and
+    # create_scheduler() reads it from there. Declaring it twice is how the two
+    # came to disagree — with mode="min" fed a metric that grows, the learning
+    # rate was halved every time the model improved.
     "factor": 0.5,
     "patience": 5,
     "min_lr": 1e-7,
@@ -710,13 +714,20 @@ def build_config(run_id: str) -> Dict[str, Any]:
     Saved as config.json inside the run folder, it is the complete record of
     the settings used, complementing the summary row written to the CSV.
 
+    The result is a deep copy, so a caller adding to it — the training loop
+    records the parameter count and the commit there — cannot reach back into
+    the module's own dictionaries. Returning references made `config.json` a
+    live view of the configuration rather than a snapshot of it, and let a run
+    quietly mutate the settings of the next one.
+
     Args:
         run_id: Identifier produced by build_run_id().
 
     Returns:
-        Nested dictionary describing the entire configuration.
+        Nested dictionary describing the entire configuration, owned by the
+        caller.
     """
-    return {
+    return deepcopy({
         "run_id": run_id,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "input": {
@@ -728,6 +739,7 @@ def build_config(run_id: str) -> Dict[str, Any]:
         },
         "model": {
             "architecture": ARCHITECTURE,
+            "base_channels": MODEL_BASE_CHANNELS.get(ARCHITECTURE),
             "encoder": ENCODER,
             "encoder_weights": ENCODER_WEIGHTS,
             "num_classes": NUM_CLASSES,
@@ -754,7 +766,7 @@ def build_config(run_id: str) -> Dict[str, Any]:
         "scheduler": SCHEDULER_CONFIG,
         "skeleton_loss": SKELETON_LOSS_CONFIG,
         "reproducibility": {"random_seed": RANDOM_SEED},
-    }
+    })
 
 
 # =====================================================

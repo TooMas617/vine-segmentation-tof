@@ -93,28 +93,43 @@ def create_optimizer(
 def create_scheduler(
     optimizer: torch.optim.Optimizer,
     scheduler_config: Optional[Dict[str, Any]] = None,
+    monitor_mode: Optional[str] = None,
 ) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
     """Build the learning-rate schedule described by the configuration.
+
+    ReduceLROnPlateau is stepped with config.MONITOR_METRIC, so its direction
+    is taken from config.MONITOR_MODE rather than declared separately. The two
+    describe the same quantity: letting them be set independently is what
+    allowed a schedule watching for a *decrease* to be fed a metric that grows,
+    halving the learning rate every time the model improved.
 
     Args:
         optimizer: Optimiser the schedule drives.
         scheduler_config: Settings. Defaults to config.SCHEDULER_CONFIG.
+        monitor_mode: Direction of the monitored metric. Defaults to
+            config.MONITOR_MODE.
 
     Returns:
         The scheduler, or None when no schedule is requested.
 
     Raises:
-        ValueError: If the scheduler type is unknown.
+        ValueError: If the scheduler type is unknown, or the direction is not
+            "max" or "min".
     """
     if scheduler_config is None:
         scheduler_config = config.SCHEDULER_CONFIG
+    if monitor_mode is None:
+        monitor_mode = config.MONITOR_MODE
+
+    if monitor_mode not in ("max", "min"):
+        raise ValueError(f"monitor_mode must be 'max' or 'min', got '{monitor_mode}'")
 
     scheduler_type = scheduler_config["type"]
 
     if scheduler_type == "reduce_on_plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode=scheduler_config["mode"],
+            mode=monitor_mode,
             factor=scheduler_config["factor"],
             patience=scheduler_config["patience"],
             min_lr=scheduler_config["min_lr"],
@@ -412,11 +427,13 @@ def train_model(
 
     # The settings are written before the first epoch: a run interrupted after
     # five minutes still leaves behind what it was trying to do.
+    # build_config returns a deep copy, so adding to it here cannot reach back
+    # into the config module.
     run_config = config.build_config(run_id)
-    run_config["model"]["base_channels"] = config.MODEL_BASE_CHANNELS.get(config.ARCHITECTURE)
     run_config["model"]["parameters"] = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
+    # "enabled" says what was configured; "applied" says what actually ran.
     run_config["skeleton_loss"]["applied"] = skeleton_criterion is not None
     run_config["git_commit"] = git_commit_hash()
     (run_paths["root"] / CONFIG_FILENAME).write_text(
@@ -525,8 +542,15 @@ def train_model(
 
     if verbose:
         print()
-        print(f"[OK] Finished in {total_seconds / 60:.1f} min. "
-              f"Best {monitor_metric} {best_value:.4f} at epoch {best_epoch}.")
+        # best_value stays None only if every epoch produced NaN for the
+        # monitored metric — a broken run, but one that should be reported
+        # rather than crash the cell after the training already finished.
+        if best_value is None:
+            print(f"[WARNING] Finished in {total_seconds / 60:.1f} min, but "
+                  f"{monitor_metric} was never defined: no checkpoint was kept as best.")
+        else:
+            print(f"[OK] Finished in {total_seconds / 60:.1f} min. "
+                  f"Best {monitor_metric} {best_value:.4f} at epoch {best_epoch}.")
         print(f"     Run folder: {run_paths['root']}")
 
     return tracker, best_checkpoint
