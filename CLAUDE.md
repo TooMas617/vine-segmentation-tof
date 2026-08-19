@@ -183,13 +183,18 @@ locally. `UNetPlusPlus` is named in `config.ARCHITECTURE` but is deliberately
 not implemented. The whole chain — dataloader, model, loss, metrics — has been
 run end to end on real samples.
 
+`training.py` and notebook 03 are written and exercised end to end on the CPU:
+optimiser and scheduler factories, checkpointing, the epoch loop, early
+stopping and the results row. Each run writes `experiments/<run_id>/` and one
+of 72 columns into `results/experiments.csv`, stamped with the git commit and
+the `splits_hash`.
+
 Next:
 
-1. **Notebook 03 (Training)** — training loop, per-run experiment folder,
-   automatic logging to `results/experiments.csv`. Also the right place for
-   visualising the online augmentation pipeline, which needs the `Dataset`.
-2. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
-   comparison table.
+1. **Run the experiments on Colab.** Three architectures at matched capacity,
+   plus the ablation with and without the skeleton recall loss.
+2. **Notebook 04 (Evaluation)** — prediction visualisation and the comparison
+   table across runs.
 
 The experiments must include an **ablation with and without the skeleton
 recall loss**. Theory predicts it trades precision for recall, and the model

@@ -1343,6 +1343,70 @@ secondi, lo stesso scarto trovato su Colab costa una sessione.
 
 ---
 
+## 9. Training e registro degli esperimenti (`training.py`)
+
+**Input:** dataloader, modello, loss.
+**Output:** una cartella per run sotto `experiments/`, una riga in
+`results/experiments.csv`.
+
+### Scelte
+
+**Un solo corpo per training e valutazione.** `run_epoch()` distingue le due
+fasi dalla presenza dell'ottimizzatore. Tenerle separate significherebbe due
+implementazioni che possono divergere su *cosa* misurano, ed è esattamente il
+tipo di divergenza che non produce errori ma rende i numeri incomparabili.
+
+**Ottimizzatore e scheduler salvati nel checkpoint.** Riprendere una run senza
+di loro riparte con momento azzerato e schedule reinizializzata: non è la
+stessa run. Vengono salvati due checkpoint — il migliore secondo la metrica
+monitorata e l'ultimo — perché servono a due scopi diversi: il primo per
+valutare, il secondo per riprendere.
+
+**L'architettura è registrata nel checkpoint e verificata al caricamento.**
+Caricare i pesi di SegNet dentro un PSPNet produrrebbe un errore oscuro o, in
+casi sfortunati, un caricamento parziale silenzioso.
+
+**clDice calcolato sulla validation a ogni epoca.** Richiede le predizioni
+dell'intera passata in memoria e la scheletrizzazione su CPU, quindi non è
+gratis, ma su 14 immagini costa poco e dà la curva. Sul training non viene
+calcolato: 256 predizioni a 512×512 in memoria sono mezzo gigabyte.
+
+**Precisione e recall stampati a ogni epoca** accanto alla metrica monitorata,
+per la ragione della sezione 7.6: un termine che premia il recall senza
+penalizzare i falsi positivi li fa divergere, e la sola IoU lo nasconderebbe.
+
+### Colonne di `experiments.csv`
+
+La riga registra **come** una run era configurata oltre a **cosa** ha
+prodotto: una metrica senza le impostazioni che l'hanno generata non è
+confrontabile con niente. Settantadue colonne, raggruppate così:
+
+| Gruppo | Contenuto |
+|---|---|
+| Identificazione | `run_id`, timestamp, `git_commit`, `splits_hash` |
+| Modello | architettura, `base_channels`, parametri, canali di ingresso, dimensione immagine |
+| Loss | tipo, pesi di CE e Dice, metodo dei pesi di classe, skeleton loss attiva, peso, kernel |
+| Ottimizzazione | ottimizzatore, learning rate, weight decay, scheduler, batch size |
+| Andamento | epoche eseguite, epoca migliore, metrica monitorata e suo valore, secondi per epoca |
+| Test | IoU, Dice, precisione, recall e clDice — media e **per classe** |
+
+Tre colonne sono state aggiunte rispetto al notebook monolitico, ciascuna per
+un motivo emerso durante il refactoring:
+
+- **`base_channels`**, perché due run della stessa architettura a larghezze
+  diverse sarebbero altrimenti indistinguibili (sezione 8)
+- **`git_commit`**, con marcatura `-dirty` se ci sono modifiche non
+  committate, perché il codice è cambiato molto e cambierà ancora: una metrica
+  è interpretabile solo accanto alla versione che l'ha prodotta
+- **precisione e recall per classe**, perché sono il sintomo con cui si valuta
+  la skeleton loss
+
+**Lo schema può crescere.** Il file viene riletto, concatenato e riscritto, così
+una run che registra una metrica che le precedenti non avevano lascia le celle
+vuote invece di fallire o di far sparire la colonna.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
@@ -1354,7 +1418,8 @@ secondi, lo stesso scarto trovato su Colab costa una sessione.
 | 3 | Formato dei file di intensità | **Due lotti con formati diversi**; riconciliati in lettura da `read_modality_image()` — sezione 4 |
 | 4 | Pesi delle classi: calcolo in EDA, salvataggio, ricarica nel training | Fatto: notebook 02 li scrive, `config.load_class_weights()` li rilegge con verifica dell'impronta |
 | 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Chiuso a monte: il dato che arriva alla classe è già conforme a `MODALITY_CHANNELS` |
-| 9 | Formule di Skeleton Recall Loss e clDice | Verificate sui PDF in `docs/` — sezione 7.1 |
+| 5 | Definizione delle colonne di `experiments.csv` | Definite: 72 colonne, elenco in sezione 9 |
+| 9 | Formule di Skeleton Recall Loss e clDice | Verificate sui PDF in `reference/` — sezione 7.1 |
 | 10 | Critica alla Skeleton Recall Loss | Letta e analizzata: l'obiezione sul gradiente costante non regge sui logit, ma l'asimmetria recall/precisione sì — sezione 7.4 |
 
 La questione 3 era stata dichiarata risolta con una conclusione **errata**: la
@@ -1365,7 +1430,6 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 
 | # | Questione | Quando |
 |---|---|---|
-| 5 | Definizione delle colonne di `experiments.csv` | Notebook 03 |
 | 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Dopo l'ampliamento del dataset |
 | 8 | Riannotazione del campione escluso e revisione delle annotazioni esistenti | All'ampliamento del dataset a ~100 immagini |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
