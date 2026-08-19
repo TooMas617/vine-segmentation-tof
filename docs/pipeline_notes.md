@@ -4,9 +4,15 @@ Documento di lavoro: registra **cosa fa** ogni fase della pipeline, **quali scel
 implementative** sono state prese e **perché**. Serve come base per il capitolo
 metodologico della tesi e come riferimento per chi riprenderà il codice.
 
-Ultimo aggiornamento: notebook `01_Data_Preparation` completato; notebook
-`02_EDA` in costruzione. Il dataset è passato da 93 a 92 immagini per
-l'esclusione di un campione con annotazione incompleta (sezione 3).
+Ultimo aggiornamento: notebook `01_Data_Preparation` e `02_EDA` completati ed
+eseguiti; moduli `dataset.py`, `losses.py` e `metrics.py` scritti. Il dataset è
+passato da 93 a 92 immagini per l'esclusione di un campione con annotazione
+incompleta (sezione 3).
+
+Gli articoli di riferimento citati nelle sezioni 2 e 7 sono depositati in
+`reference/`, cartella esclusa dal versionamento. Sono tutti preprint arXiv e
+nelle note vengono citati per identificativo, così restano reperibili anche
+senza i file.
 
 ---
 
@@ -924,94 +930,243 @@ permette di verificarla localmente prima di portare il codice su Colab.
 
 ---
 
-## 7. Loss e metriche — analisi preliminare, codice non ancora scritto
+## 7. Loss e metriche (`losses.py`, `metrics.py`)
 
-Ispezione del notebook monolitico prima dell'estrazione in `losses.py` e
-`metrics.py`. **Nessun codice è stato ancora scritto**: quanto segue elenca ciò
-che è stato accertato e ciò che resta da verificare sulle fonti primarie.
+**Input:** logit del modello, label map, scheletro tubato precalcolato.
+**Output:** valore di loss per l'ottimizzatore, metriche per epoca e per run.
 
-### Difetti accertati nel codice originale
+Le formule sono state verificate direttamente sui tre articoli di riferimento,
+depositati in `reference/`.
 
-**`FocalLoss` non è mai stata eseguita.** La `forward` calcola i pesi in una
-variabile locale e poi passa `weight=self.weights`, attributo inesistente —
-l'attributo si chiama `self.class_weights`. Solleva `AttributeError` alla prima
-chiamata.
+### 7.1 Formule di riferimento
 
-**`SkeletonRecallLoss` non produce gradiente.** Ottiene le classi predette con
-`torch.argmax(pred_logits, dim=1)`. `argmax` è una funzione a gradino: la sua
-derivata è nulla ovunque, quindi il tensore risultante è staccato dal grafo di
-calcolo. Verificato sperimentalmente: il tensore prodotto ha
-`requires_grad=False` e nessun `grad_fn`, e chiamarci sopra `backward()`
-solleva un errore. Nel training loop non esplode solo perché il termine viene
-sommato alla loss principale, che il grafo ce l'ha — ma il suo contributo al
-gradiente è **esattamente zero**. La loss compare nel valore stampato e non
-influenza l'addestramento in alcun modo.
+**clDice** (Shit et al., CVPR 2021, eq. 1 e 2). Dati la maschera vera `V_L`, la
+predetta `V_P` e i rispettivi scheletri `S_L` e `S_P`:
 
-*Correzione.* La predizione deve entrare come **probabilità softmax** e non
-come etichetta. L'abstract dell'articolo originale e la descrizione
-dell'implementazione ufficiale parlano entrambi di *soft recall of the
-prediction*, quindi la versione differenziabile è anche quella fedele al
-metodo.
+```
+Tprec(S_P, V_L) = |S_P ∩ V_L| / |S_P|      precisione topologica
+Tsens(S_L, V_P) = |S_L ∩ V_P| / |S_L|      sensibilità topologica
+clDice          = 2 · Tprec · Tsens / (Tprec + Tsens)
+```
 
-**Le metriche sono mediate sui batch, non calcolate sul dataset.** Ogni batch
-produce IoU, Dice e accuratezza per classe, e a fine epoca si applica
-`np.nanmean` sull'elenco dei batch. Non è l'IoU sul dataset: un batch con 50
-pixel di `Node` pesa quanto uno con 5 000, e i batch in cui la classe è assente
-producono `NaN` e vengono esclusi, per cui la media risulta condizionata ai
-soli batch in cui la classe compare. Con `batch_size = 4` e `Node` assente da
-un quarto delle immagini, la distorsione non è trascurabile.
+La prima è sensibile ai falsi positivi, la seconda ai falsi negativi; clDice è
+la loro media armonica. Gli scheletri sono **morfologici, a un pixel**.
 
-**Le metriche sklearn duplicano quelle già calcolate.** Su classificazione per
-pixel, `f1_score(average='macro')` è **identico** alla media del Dice per
-classe, che il codice calcola due righe sopra. Viene però ricalcolato
-trasferendo circa 1,3 milioni di pixel per batch da GPU a CPU e passandoli a
-sklearn.
+**Skeleton Recall Loss** (Kirchhoff et al., ECCV 2024, eq. 1):
 
-*Correzione per gli ultimi due punti:* accumulare una **matrice di confusione**
-sull'epoca e derivare tutte le metriche alla fine. Una sola operazione su GPU
-per batch, nessun trasferimento intermedio, e i valori diventano quelli reali
-sul dataset.
+```
+L_SkelRecall = −(1/|C|) · Σ_c [ Σ_i Y_skel,i,c · Ŷ_i,c ] / [ Σ_i Y_skel,i,c ]
+```
 
-### Scostamenti rispetto ai metodi di riferimento
+dove `Y_skel` è lo scheletro **tubato** del ground truth e `Ŷ` è la
+**probabilità predetta**. La combinazione con la loss principale è
+`L = L_generic + w · L_SkelRecall`, con `L_generic = CE + Dice` e, negli
+esperimenti dell'articolo, `w ∈ {0,1 ; 1,0}`.
 
-**clDice è calcolato su scheletri tubati, non sulla linea centrale a un
-pixel.** La definizione originale usa lo scheletro morfologico; il codice usa
-la versione dilatata e ritagliata, sia per il ground truth sia per la
-predizione. I due lati sono quindi coerenti fra loro, ma la metrica risulta più
-permissiva della definizione: è la stessa deriva verso la sovrapposizione di
-area già misurata nella sezione 2 con l'analisi di copertura.
+I due lavori usano quindi **due scheletri diversi per due scopi diversi**: il
+tubo per la loss, perché i pixel in più stabilizzano il segnale; quello esatto
+per la metrica, perché è la definizione. L'articolo sulla SRL lo dice
+esplicitamente in §4.2, dove usa clDice *as a metric*.
 
-**Asimmetria nello scheletro del cordone.** Quello del ground truth deriva
-dalla maschera binaria unificata con le occlusioni rimosse a posteriori, quindi
-segue l'asse reale ed è continuo. Quello della predizione è lo scheletro della
-maschera predetta così com'è: se il modello spezza il cordone, lo scheletro
-risulta spezzato. I due lati non sono costruiti allo stesso modo, e la
-precisione topologica ne risente in una direzione sola.
+### 7.2 Difetti corretti nel codice originale
 
-**Scala della combinazione.** L'articolo sulla Skeleton Recall Loss somma
-`L_Dice + L_CE` con coefficiente 1 ciascuno, quindi la loss principale ha scala
-circa 2. La `CombinedLoss` del progetto usa `0,7·CE + 0,3·Dice`, combinazione
-convessa di scala circa 1. Ne segue che `SKELETON_LOSS_CONFIG['weight'] = 0.2`
-pesa, in rapporto alla loss principale, **il doppio** di quanto peserebbe
-`w = 0,2` nella formulazione dell'articolo. Un valore preso dall'articolo va
-dimezzato, oppure la differenza di scala va dichiarata.
+**`FocalLoss` non era mai stata eseguita.** Passava `weight=self.weights`,
+attributo inesistente: `AttributeError` alla prima chiamata. Nella riscrittura
+la probabilità della classe vera è letta dalla softmax invece che ricavata come
+`exp(−CE)`: con i pesi di classe attivi quest'ultima non è una probabilità, e
+`gamma` avrebbe agito con intensità diversa da una classe all'altra.
 
-### Da verificare sulle fonti primarie
+**`SkeletonRecallLoss` non produceva gradiente.** Ricavava le classi predette
+con `torch.argmax`, funzione a gradino la cui derivata è nulla ovunque. Il
+tensore risultante è staccato dal grafo — verificato: `requires_grad=False`,
+nessun `grad_fn`, e `backward()` solleva un errore. Sommato alla loss
+principale non falliva, ma il suo contributo al gradiente era **esattamente
+zero**: la loss compariva nel valore stampato e non ha mai influito
+sull'addestramento. Corretta usando la probabilità softmax, che è anche la
+formulazione dell'articolo.
 
-Le ricerche sul web hanno confermato struttura e principio, ma **non è stato
-possibile scaricare né i PDF né il codice** (`arxiv.org` e `github.com`
-irraggiungibili dalla rete usata). I punti seguenti restano quindi non
-verificati e vanno controllati sui documenti originali.
+**Le metriche erano mediate sui batch.** Ogni batch produceva IoU, Dice e
+accuratezza, e a fine epoca si applicava `np.nanmean` sull'elenco. Un batch con
+50 pixel di una classe pesava quanto uno con 5 000, e i batch privi della
+classe davano `NaN` ed erano esclusi, per cui la media risultava condizionata
+ai soli batch in cui la classe compariva. Sostituite da una **matrice di
+confusione** accumulata sullo split, da cui ogni metrica di sovrapposizione si
+deriva alla fine.
 
-| # | Da verificare | Fonte |
+**Le metriche sklearn erano ridondanti.** Su classificazione per pixel,
+`f1_score(average='macro')` è identico alla media del Dice per classe, già
+calcolata. Veniva però ricalcolato trasferendo circa 1,3 milioni di pixel per
+batch da GPU a CPU. Rimosse: la matrice di confusione dà precisione e recall
+senza costo aggiuntivo.
+
+### 7.3 Scostamenti dai metodi di riferimento
+
+Ogni scostamento è deliberato e misurato.
+
+**Scheletrizzazione per classe invece che dell'unione.** L'Algoritmo 1
+dell'articolo sulla SRL binarizza *tutto* il foreground insieme, scheletrizza
+l'unione, dilata, e riassegna le classi moltiplicando per il ground truth. Il
+progetto scheletrizza invece **ogni classe separatamente**.
+
+*Motivazione.* Il loro schema è pensato per classi che sono segmenti adiacenti
+di uno stesso albero (sottotipi di vaso), non per strutture che si occludono a
+vicenda. Nel vigneto il tralcio passa **davanti** al cordone: l'unione dei due
+è localmente una macchia spessa il cui asse mediano devia dall'asse del
+cordone, e la successiva moltiplicazione per la label map assegna quei pixel a
+`Cane`, che ha priorità. Lo scheletro del cordone si spezza a ogni incrocio.
+
+*Verifica* sulle 92 immagini, applicando il loro algoritmo alla lettera:
+
+| | per classe (nostro) | unione poi divisione |
 |---|---|---|
-| a | Formula esatta della Skeleton Recall Loss: media o somma del recall fra classi, normalizzazione | arXiv:2404.03010 |
-| b | Formula esatta di clDice e definizione precisa dei due termini | Shit et al., CVPR 2021 |
-| c | Conclusioni dell'analisi critica sui gradienti della SRL | arXiv:2508.11374, *Does the Skeleton-Recall Loss Really Work?* |
-| d | Se l'implementazione ufficiale usi lo scheletro tubato o a un pixel per la loss | MIC-DKFZ/Skeleton-Recall |
+| pixel di scheletro del cordone | 1 358 | 1 664 |
+| **componenti connesse** | **9,32** | **14,36** |
+| immagini con più frammenti | — | **86 / 92** |
 
-Il punto **c** è quello che conta di più per la discussione: adottare una loss
-di cui esiste una critica pubblicata è legittimo, ignorarla no.
+L'unione produce più pixel ma il 54 % di frammenti in più, e peggiora in 86
+immagini su 92.
+
+**Kernel di dilatazione quadrato 2×2 invece del diamante di raggio 2.**
+L'articolo dilata con un diamante di raggio 2, cioè 13 pixel.
+
+*Motivazione.* Non è una questione di sconfinamento: entrambe le
+implementazioni ritagliano il tubo sulla maschera — il progetto con
+`tubed & binary_mask`, l'articolo con la moltiplicazione `Y_skel × Y`. Il
+problema è la **copertura**:
+
+| Kernel | Pixel | Copertura media di `Cane` | Massima | Immagini oltre l'80 % |
+|---|---|---|---|---|
+| quadrato 2×2 | 4 | 34,4 % | 56,6 % | 0 / 92 |
+| quadrato 3×3 | 9 | 53,0 % | 83,7 % | 3 / 92 |
+| diamante r2 | 13 | 65,7 % | 92,8 % | 7 / 92 |
+
+Col diamante il tubo occupa due terzi del tralcio: smette di essere una linea
+centrale e diventa la maschera, e la SRL degenera in un normale termine di
+recall sulla classe. L'articolo può permetterselo perché vasi e strade sono
+spessi rispetto alla risoluzione; i tralci di vite no.
+
+**clDice sullo scheletro esatto.** Il codice originale passava a clDice lo
+scheletro tubato, conflando i due usi. Corretto: la metrica usa lo scheletro
+morfologico, estratto al momento della valutazione sia per la predizione sia
+per il ground truth, così i due lati del confronto sono costruiti allo stesso
+modo. Lo scheletro tubato su disco resta e alimenta la loss.
+
+*Conseguenza sulla scelta del kernel.* L'analisi di copertura della sezione 2
+nasceva dal timore che il tubo facesse degenerare clDice. Con la metrica
+riportata alla sua definizione quel rischio non esiste più, e la copertura
+resta rilevante solo per la loss — dove misura quanto il termine si allontani
+dalla connettività verso il puro recall di area.
+
+**Forma della loss: `1 − recall` invece di `−recall`.** Differiscono di una
+costante additiva, quindi hanno **gradiente identico**. La forma adottata
+mantiene il valore in `[0, 1]`, leggibile accanto alle altre loss.
+
+**Media sulle sole classi presenti nel batch.** L'articolo divide per `|C|`
+fisso, che è indefinito quando una classe non compare. Le classi assenti sono
+escluse dalla media invece di essere contate come recall nullo.
+
+**Scala della combinazione.** L'articolo somma `CE + Dice` con coefficiente 1
+ciascuno, scala circa 2; la `CombinedLoss` del progetto usa `0,7·CE + 0,3·Dice`,
+combinazione convessa di scala circa 1. Un peso `w` preso dall'articolo va
+quindi **dimezzato**: `w = 0,2` qui equivale a circa `0,4` là, fra i due valori
+che gli autori hanno testato.
+
+### 7.4 Cosa fa davvero la Skeleton Recall Loss
+
+Arora et al. (arXiv:2508.11374) contestano i risultati dell'articolo originale
+con un'analisi dei gradienti, mostrando che il gradiente della SRL rispetto
+alla predizione è **costante**, e concludendo che *"a constant gradient keeps
+pushing the parameters further away from the already achieved optimal values"*.
+
+**L'osservazione è corretta, la conclusione no.** Il gradiente è costante
+rispetto alla *probabilità*, ma le reti si ottimizzano attraverso i *logit*, e
+attraverso la jacobiana della softmax diventa `−p(1−p)`:
+
+| p(classe) | ∂L/∂p | ∂L/∂logit |
+|---|---|---|
+| 0,018 | −1,00 | −0,018 |
+| 0,500 | −1,00 | −0,250 |
+| 0,982 | −1,00 | −0,018 |
+| 0,998 | −1,00 | −0,002 |
+
+La loss **smette da sola di spingere** quando il modello è già sicuro:
+l'obiezione principale non regge al livello a cui avviene l'ottimizzazione.
+
+La stessa curva rivela però un limite che gli autori non nominano, e che è più
+serio: il gradiente si annulla **anche a `p → 0`**, cioè sui pixel di scheletro
+che il modello sbaglia con sicurezza — proprio quelli che la loss dovrebbe
+recuperare. La cross-entropy lì ha gradiente massimo (`p − 1`). La Skeleton
+Recall Loss è quindi un **affinatore attorno alla soglia decisionale**, non un
+recuperatore di strutture perse.
+
+**Resta valido** il loro rilievo che la SRL non penalizza i falsi positivi: la
+loss vive solo sui pixel di scheletro, altrove il gradiente è nullo. È un
+termine di puro recall senza contraltare di precisione, per costruzione.
+
+**Restano validi i loro risultati sperimentali**: su dataset tubulari, 3
+punteggi significativamente migliori, 3 significativamente peggiori e 6
+marginali su 15; su dataset non tubulari, 1 migliore contro 7 peggiori.
+
+### 7.5 clDice non vede il gonfiamento
+
+Verificato su geometrie sintetiche, con un tralcio orizzontale di 4 pixel di
+spessore:
+
+| Predizione | IoU | Precisione | clDice |
+|---|---|---|---|
+| perfetta | 1,000 | 1,000 | 1,000 |
+| **gonfiata** (spessore 4 → 10) | **0,400** | **0,400** | **1,000** |
+| interrotta (buco di 4 px su 50) | 0,920 | 1,000 | 0,956 |
+| gonfiata e interrotta | 0,387 | 0,400 | 0,956 |
+
+**clDice è cieco al gonfiamento del raggio.** Non è un difetto: l'articolo
+originale dichiara esplicitamente che un errore di raggio è tollerabile mentre
+una rottura di connettività no. Le due famiglie di metriche misurano proprietà
+ortogonali, e vanno riportate insieme.
+
+*Rilevanza per questo progetto.* Il modello mostra già una tendenza a
+sovrasegmentare i tralci rispetto all'annotazione. Quel difetto si manifesta su
+IoU e precisione e **non comparirà in clDice**.
+
+### 7.6 Previsione da verificare sperimentalmente
+
+Mettendo insieme 7.4 e 7.5 si ottiene un'ipotesi falsificabile: poiché la SRL
+premia il recall senza penalizzare i falsi positivi, e il modello già gonfia i
+tralci, ci si attende che attivarla **peggiori la precisione su `Cane` e
+`Cordon` lasciando stabili o in miglioramento IoU e clDice**.
+
+L'esperimento è un'ablazione con e senza il termine, che `SKELETON_LOSS_CONFIG`
+già consente con un flag: due run identiche in tutto il resto. Guardare la sola
+mean IoU, o il solo clDice, non basterebbe a rilevarlo — per questo
+`ConfusionMatrix` riporta precisione e recall per classe, e `plot_history` li
+mette in grafico accanto alla loss.
+
+Confermare o smentire l'ipotesi sui propri dati vale più di una citazione: una
+critica pubblicata alla loss adottata esiste, e va affrontata con una misura.
+
+---
+
+## 8. Modelli
+
+### Addestramento da zero, senza encoder pre-addestrati
+
+Le architetture sono usate con encoder inizializzati casualmente
+(`ENCODER = "custom"`, `ENCODER_WEIGHTS = None`), escludendo i backbone
+pre-addestrati su ImageNet.
+
+*Motivazione.* Un encoder pre-addestrato si aspetta tre canali RGB di immagini
+naturali, mentre l'ingresso qui è a cinque canali di natura eterogenea:
+intensità ToF, profondità colorata e affidabilità. Adattarlo richiederebbe di
+alterare il primo strato convoluzionale — replicando o mediando i pesi sui
+canali aggiuntivi — con il risultato che i pesi pre-addestrati risulterebbero
+comunque non pertinenti sui canali nuovi. Il vantaggio del transfer learning si
+ridurrebbe alla sola intensità, che è l'unico canale assimilabile a
+un'immagine naturale.
+
+*Conseguenza sulla normalizzazione.* `USE_IMAGENET_NORM_FOR_RGB = False`: tutti
+i canali usano le statistiche del dataset misurate in sezione 5. La modalità
+mista resta implementata in `dataset.py` ma non viene usata, ed esiste solo per
+il caso in cui si volesse riconsiderare la scelta.
 
 ---
 
@@ -1024,7 +1179,10 @@ di cui esiste una critica pubblicata è legittimo, ignorarla no.
 | 1 | Frame indipendenti o sequenze continue? | Acquisizioni indipendenti: split casuale valido |
 | 2 | `dilation_kernel_size`: 2 o 3? | Mantenuto 2, sulla base della copertura misurata |
 | 3 | Formato dei file di intensità | **Due lotti con formati diversi**; riconciliati in lettura da `read_modality_image()` — sezione 4 |
+| 4 | Pesi delle classi: calcolo in EDA, salvataggio, ricarica nel training | Fatto: notebook 02 li scrive, `config.load_class_weights()` li rilegge con verifica dell'impronta |
 | 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Chiuso a monte: il dato che arriva alla classe è già conforme a `MODALITY_CHANNELS` |
+| 9 | Formule di Skeleton Recall Loss e clDice | Verificate sui PDF in `docs/` — sezione 7.1 |
+| 10 | Critica alla Skeleton Recall Loss | Letta e analizzata: l'obiezione sul gradiente costante non regge sui logit, ma l'asimmetria recall/precisione sì — sezione 7.4 |
 
 La questione 3 era stata dichiarata risolta con una conclusione **errata**: la
 verifica originale ispezionava un campione casuale e ne riportava un formato
@@ -1034,13 +1192,11 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 
 | # | Questione | Quando |
 |---|---|---|
-| 4 | Pesi delle classi: calcolo in EDA, salvataggio su file, ricarica nel training | Notebook 02, in corso |
 | 5 | Definizione delle colonne di `experiments.csv` | Notebook 03 |
 | 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Dopo l'ampliamento del dataset |
 | 8 | Riannotazione del campione escluso e revisione delle annotazioni esistenti | All'ampliamento del dataset a ~100 immagini |
-| 9 | Verifica sulle fonti primarie delle formule di Skeleton Recall Loss e clDice — tabella in sezione 7 | Prima di scrivere `losses.py` e `metrics.py` |
-| 10 | Lettura di *Does the Skeleton-Recall Loss Really Work?* e sue implicazioni sulla scelta della loss | Prima degli esperimenti definitivi |
-| 11 | Scelta del peso della Skeleton Recall Loss, tenendo conto della diversa scala della loss principale | Notebook 03 |
+| 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
+| 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
 
 ---
 

@@ -165,26 +165,35 @@ Full rationale in `docs/pipeline_notes.md`.
 ## Status and next steps
 
 Notebooks 01 and 02 are complete and have run end to end on the full dataset.
-`src/exploration.py` covers all six sections; each carries its own plotting
-function rather than collecting them at the end, and every plot takes a
-`save_path` and shares `_finalise_figure()`.
-
 Notebook 02 writes `data/processed/class_weights.json`,
 `data/processed/channel_stats.json` and the figures under
 `results/figures/eda/`. Both JSON files are stamped with the `splits_hash` and
 reload through `config.load_class_weights` / `config.load_channel_stats`.
 
+`dataset.py`, `losses.py` and `metrics.py` are written and verified locally.
+The reference papers for clDice and the Skeleton Recall Loss live in
+`reference/` (not versioned); section 7 of the notes records their formulas,
+every deviation from them and the reasoning, and should be read before
+touching either module.
+
 Next:
 
-1. **Training modules** — `dataset.py`, `models.py`, `losses.py`, `metrics.py`,
-   extracted from the original monolithic notebook. The `Dataset` must read
-   through `data_preparation.read_modality_image`, stack modalities in
-   `config.MODALITY_ORDER`, and normalise with the saved channel statistics.
+1. **`models.py`** — U-Net, U-Net++, SegNet, PSPNet, from cells 20–31 of the
+   original notebook. Encoders are trained from scratch: a pre-trained
+   backbone expects three RGB channels while the input here is five
+   heterogeneous ones, so the transfer would only apply to intensity. See
+   section 8 of the notes.
 2. **Notebook 03 (Training)** — training loop, per-run experiment folder,
    automatic logging to `results/experiments.csv`. Also the right place for
    visualising the online augmentation pipeline, which needs the `Dataset`.
 3. **Notebook 04 (Evaluation)** — test set metrics, prediction visualisation,
    comparison table sorted by mean IoU.
+
+The experiments must include an **ablation with and without the skeleton
+recall loss**. Theory predicts it trades precision for recall, and the model
+already over-segments canes, so report precision and recall per class: mean
+IoU alone would hide the effect, and clDice is blind to radius inflation by
+design. Section 7.6 of the notes states the prediction to test.
 
 Open points are tracked at the end of `docs/pipeline_notes.md`. The most
 consequential is whether to drop the `Node` class: measurements are in section 5
