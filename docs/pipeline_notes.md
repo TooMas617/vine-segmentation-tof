@@ -1220,11 +1220,11 @@ sono verificabili in locale senza GPU e senza installare nulla.
 confronto è fra tre architetture che rispondono in modo diverso alla stessa
 domanda, non fra quattro varianti della stessa idea.
 
-| | Parametri | Peso | Come propaga il dettaglio |
+| | Larghezza | Parametri | Come propaga il dettaglio |
 |---|---|---|---|
-| U-Net | 31,0 M | 118 MB | connessioni skip: il decoder riceve le mappe a piena risoluzione |
-| SegNet | 7,1 M | 27 MB | solo gli **indici** di pooling, non le mappe |
-| PSPNet | 14,2 M | 54 MB | contesto multi-scala, risoluzione fermata a H/8 |
+| U-Net | base 32 | 7,76 M | connessioni skip: il decoder riceve le mappe a piena risoluzione |
+| SegNet | base 64 | 7,09 M | solo gli **indici** di pooling, non le mappe |
+| PSPNet | base 48 | 8,02 M | contesto multi-scala, risoluzione fermata a H/8 |
 
 **U-Net** è la scelta abituale per strutture sottili: le connessioni skip
 portano al decoder le feature che l'encoder aveva prima del pooling, quindi un
@@ -1250,6 +1250,62 @@ prevedibile che PSPNet collochi le strutture correttamente e sia la meno precisa
 delle tre sui bordi — cioè esattamente la distinzione che clDice e IoU insieme
 sono state scelte per separare (sezione 7.5). Se il confronto lo confermasse,
 sarebbe una conferma indipendente della scelta delle metriche.
+
+### Capacità pareggiata fra le architetture
+
+Alle loro larghezze naturali le tre architetture **non sono confrontabili**. Il
+riscontro sui lavori di riferimento lo conferma: SegNet in Majeed et al. usa
+VGG16 con 13 layer convoluzionali e 5 blocchi encoder, PSPNet in Chen et al. un
+backbone ResNet o VGG. Riprodotte così, e con U-Net alla sua dimensione
+canonica, si otterrebbe:
+
+| | Nostra implementazione naturale | In letteratura |
+|---|---|---|
+| U-Net | 31,0 M | ~31 M (architettura originale) |
+| SegNet | 7,1 M | ~29,5 M (VGG16, 5 blocchi, pre-addestrato) |
+| PSPNet | 14,2 M | ~46–65 M (backbone ResNet50) |
+
+*Il problema.* Un confronto fra un U-Net a grandezza naturale e versioni ridotte
+delle altre due **confonde architettura e capacità**: se U-Net vincesse, non si
+potrebbe dire se il merito è delle connessioni skip o del fatto che ha quattro
+volte i parametri di SegNet.
+
+*Scelta adottata: pareggiare verso il basso.* `config.MODEL_BASE_CHANNELS`
+fissa la larghezza di ciascuna architettura in modo che i parametri siano
+comparabili — 7,76, 7,09 e 8,02 milioni, uno scarto del 13 %.
+
+Tre ragioni, in ordine di peso:
+
+1. **Rende il confronto interpretabile.** È l'unico modo per attribuire una
+   differenza di risultato all'architettura invece che alla dimensione.
+2. **Costa meno.** Misurato su forward più backward: 2 457 ms per iterazione
+   sommando le tre run pareggiate, contro 4 283 ms alle larghezze naturali.
+   Pareggiare *verso l'alto* sarebbe costato circa 7 650 ms, e aggiungere una
+   sola run di controllo a capacità ridotta 4 969 ms su quattro run. Il
+   pareggio verso il basso è la strada metodologicamente pulita **e** la più
+   economica.
+3. **È più adatto ai dati.** Il training set conta 256 campioni aumentati da 64
+   immagini originali. Trentuno milioni di parametri su 256 campioni sono
+   molti, e il rischio di overfitting è concreto a prescindere dal confronto.
+
+*Conseguenza da dichiarare.* I risultati di SegNet non saranno confrontabili
+con quelli di Majeed et al.: oltre a essere più stretto, il nostro è addestrato
+da zero mentre il loro parte da VGG16 pre-addestrato. Il confronto interno fra
+le tre architetture resta valido; quello con i numeri pubblicati no.
+
+### Un difetto trovato durante la misura
+
+Il benchmark ha fatto emergere che **PSPNet fallisce in modalità training con
+batch di dimensione 1**. Il livello 1×1 della piramide riduce la mappa a un solo
+pixel, e la batch normalization non può calcolare statistiche da un unico valore
+per canale.
+
+Con 256 campioni e batch 4 il resto è zero, quindi il caso non si presenta oggi;
+si presenterebbe cambiando la dimensione del batch o del dataset — cioè proprio
+quando il dataset verrà ampliato a ~100 immagini. Il dataloader di training ora
+scarta l'ultimo batch **solo quando conterrebbe esattamente un campione**, così
+non si sprecano dati negli altri casi. Validation e test non sono toccati:
+in modalità di valutazione la batch normalization usa le statistiche correnti.
 
 ### Verifica prima della GPU
 
