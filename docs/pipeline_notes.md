@@ -748,6 +748,15 @@ riassuntive, perché la decisione dipende dalla **coda superiore**: un kernel è
 inutilizzabile se alcune immagini superano la soglia, per quanto bene si
 comporti sulle altre.
 
+> **Come riprodurre i valori del cordone.** Per `Cane` il numeratore è il tubo
+> dello scheletro della maschera visibile. Per `Cordon` **no**: lo scheletro
+> viene estratto dalla maschera binaria unificata e le occlusioni sono rimosse
+> dopo (sezione 2), mentre il denominatore resta il cordone *visibile*.
+> Scheletrizzando direttamente il cordone visibile si ottiene il 19,0 % invece
+> del 13,0 %: sono due grandezze diverse, e i valori qui riportati sono quelli
+> prodotti da `exploration.compute_skeleton_coverage()`, cioè quelli relativi
+> agli scheletri effettivamente scritti su disco.
+
 ### Verifiche visive
 
 Due controlli che nessuna metrica sostituisce.
@@ -1375,11 +1384,17 @@ calcolato: 256 predizioni a 512×512 in memoria sono mezzo gigabyte.
 per la ragione della sezione 7.6: un termine che premia il recall senza
 penalizzare i falsi positivi li fa divergere, e la sola IoU lo nasconderebbe.
 
+**La direzione dello scheduler è derivata, non dichiarata.** `ReduceLROnPlateau`
+viene avanzato con `MONITOR_METRIC`, quindi la sua direzione **deve** essere
+`MONITOR_MODE`; `create_scheduler()` la legge da lì e `SCHEDULER_CONFIG` non ne
+dichiara una propria. Vedere la sezione 11: due dichiarazioni indipendenti della
+stessa grandezza sono esattamente ciò che le ha fatte divergere.
+
 ### Colonne di `experiments.csv`
 
 La riga registra **come** una run era configurata oltre a **cosa** ha
 prodotto: una metrica senza le impostazioni che l'hanno generata non è
-confrontabile con niente. Settantadue colonne, raggruppate così:
+confrontabile con niente. Sessantasei colonne, raggruppate così:
 
 | Gruppo | Contenuto |
 |---|---|
@@ -1404,6 +1419,10 @@ un motivo emerso durante il refactoring:
 **Lo schema può crescere.** Il file viene riletto, concatenato e riscritto, così
 una run che registra una metrica che le precedenti non avevano lascia le celle
 vuote invece di fallire o di far sparire la colonna.
+
+*Accuratezza per classe non riportata.* Su un problema multiclasse per pixel
+coincide con il recall della stessa classe, quindi riportarla significherebbe
+cinque colonne duplicate.
 
 ---
 
@@ -1465,6 +1484,74 @@ ovviamente quella giusta. Il notebook mostra di proposito la stessa tabella
 ordinata per IoU e per clDice: se l'ordine cambia, le due metriche non
 concordano su quale run sia migliore, e questo è un risultato da discutere, non
 un problema da nascondere.
+
+---
+
+## 11. Verifica della pipeline prima degli esperimenti
+
+Prima di produrre risultati destinati alla tesi l'intera pipeline è stata
+sottoposta a un controllo sistematico: lettura integrale dei nove moduli,
+riesecuzione di **ogni misura citata in queste note**, e verifica funzionale su
+dati reali. Da qui in avanti una modifica al codice invalida le run già
+eseguite, quindi il controllo è stato fatto prima e non dopo.
+
+### Difetti trovati e corretti
+
+**Direzione dello scheduler opposta alla metrica monitorata — critico.**
+`SCHEDULER_CONFIG` dichiarava `mode: "min"` mentre `MONITOR_MODE` è `"max"`, e
+il ciclo di training avanza `ReduceLROnPlateau` con `mean_iou_no_bg`. Lo
+scheduler cercava quindi una **diminuzione** in una quantità che cresce:
+simulando una IoU in miglioramento costante, il learning rate veniva dimezzato
+ogni tre epoche, da 1e-4 a 1,25e-5 in dieci epoche, e avrebbe raggiunto
+`min_lr` intorno all'epoca 30. Il modello avrebbe smesso di apprendere e il
+sintomo sarebbe sembrato un limite dell'architettura.
+
+*Correzione.* La direzione non è più dichiarata: `create_scheduler()` la legge
+da `MONITOR_MODE`, perché lo scheduler avanza proprio su quella metrica. Due
+dichiarazioni indipendenti della stessa grandezza sono ciò che ha permesso la
+divergenza.
+
+**`build_config()` restituiva riferimenti alle dizionari del modulo.** Il ciclo
+di training vi aggiunge il numero di parametri e il commit; facendolo mutava
+`config.SKELETON_LOSS_CONFIG` globale, violando l'invariante dichiarato in
+sezione 0 secondo cui `config.py` non ha effetti collaterali. Il `config.json`
+di una run era una vista viva della configurazione anziché un'istantanea.
+
+*Correzione.* Copia profonda, e `base_channels` registrato direttamente da
+`build_config()` invece di essere aggiunto dal chiamante.
+
+**Interruzione al termine di una run degenere.** Se ogni epoca avesse prodotto
+`NaN` sulla metrica monitorata, la riga finale di riepilogo avrebbe sollevato
+un'eccezione formattando `None` — dopo che l'addestramento era già concluso.
+Ora la condizione è segnalata.
+
+**Imprecisioni minori.** Un commento in `config.py` indicava 7,1 M parametri
+per U-Net invece di 7,76 M; un commento in `metrics.py` dichiarava assenza di
+sincronizzazioni con l'host mentre la validazione delle etichette ne fa due per
+batch; l'accuratezza per classe duplicava il recall, aggiungendo cinque colonne
+ridondanti al registro.
+
+### Controlli superati
+
+| Ambito | Verifica |
+|---|---|
+| Numeri delle note | tutte le misure di queste note riprodotte dai dati attuali |
+| Leakage | nessuno stem condiviso fra partizioni; nessuna copia aumentata in validation o test; nessuna immagine originale a cavallo di due partizioni |
+| Provenienza | `class_weights.json` e `channel_stats.json` portano l'impronta `7afaa392`, metodo e nomi delle classi coerenti con la configurazione |
+| Normalizzazione | ciascuno dei cinque canali confrontato con il calcolo manuale delle proprie statistiche |
+| Skeleton loss | il gradiente cambia quando il termine è attivo, verificato nel ciclo reale e non solo isolatamente |
+| Riproducibilità | stesso seed, stesso risultato; seed diverso, risultato diverso; validation sempre nello stesso ordine |
+| Coerenza | canali, classi, colori, pesi della loss e larghezza del modello mutuamente consistenti |
+| Riferimenti | ogni nome importato dai quattro notebook esiste; nessun riferimento a funzioni rimosse nel refactoring |
+
+### Una nota sull'aggregazione
+
+Sia le metriche di sovrapposizione sia clDice sono **accumulate sull'intero
+split** e calcolate una volta alla fine, non mediate per immagine. È la stessa
+scelta della sezione 7.2 e per la stessa ragione: una media per immagine
+peserebbe un frammento di cordone quanto uno intero. Va dichiarato perché in
+letteratura clDice è talvolta riportato come media per immagine, e i due valori
+non coincidono.
 
 ---
 
