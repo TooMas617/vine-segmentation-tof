@@ -424,12 +424,19 @@ class CustomPSPNet(nn.Module):
         predicted. Expect this architecture to place structures correctly and
         to be the least precise of the three on their edges — which is exactly
         the distinction clDice and IoU are reported to separate.
+
+    Note:
+        The 1x1 pyramid level reduces the feature map to a single pixel, which
+        leaves batch normalisation with one value per channel. In training mode
+        that raises an error unless the batch holds at least two samples, which
+        is why the training dataloader drops a trailing batch of one.
     """
 
     def __init__(
         self,
         in_channels: int = config.INPUT_CHANNELS,
         num_classes: int = config.NUM_CLASSES,
+        base_channels: int = 64,
         pool_sizes: Sequence[int] = DEFAULT_POOL_SIZES,
         dropout: float = 0.1,
     ) -> None:
@@ -438,6 +445,9 @@ class CustomPSPNet(nn.Module):
         Args:
             in_channels: Channels of the input tensor.
             num_classes: Segmentation classes to predict.
+            base_channels: Channels after the first convolution. Every later
+                stage is a multiple of it, so this scales the whole network and
+                is what makes a capacity-matched comparison possible.
             pool_sizes: Grid size of each pyramid level.
             dropout: Dropout applied before the classifier.
         """
@@ -445,42 +455,47 @@ class CustomPSPNet(nn.Module):
         self.in_channels = in_channels
         self.num_classes = num_classes
 
+        stem = base_channels
+        shallow = base_channels * 2
+        middle = base_channels * 4
+        deep = base_channels * 8
+
         # H/2, through a strided convolution rather than pooling.
         self.layer1 = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(in_channels, stem, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(stem),
             nn.ReLU(inplace=True),
-            conv_block(64, 64),
-            conv_block(64, 128),
+            conv_block(stem, stem),
+            conv_block(stem, shallow),
         )
 
         # H/4
         self.layer2 = nn.Sequential(
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            conv_block(128, 256),
-            conv_block(256, 256),
+            conv_block(shallow, middle),
+            conv_block(middle, middle),
         )
 
         # H/8, from here on the resolution is held and dilation does the work.
         self.layer3 = nn.Sequential(
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            conv_block(256, 512, dilation=2),
-            conv_block(512, 512, dilation=2),
+            conv_block(middle, deep, dilation=2),
+            conv_block(deep, deep, dilation=2),
         )
 
         # Still H/8, wider dilation again.
         self.layer4 = nn.Sequential(
-            conv_block(512, 512, dilation=4),
-            conv_block(512, 512, dilation=4),
+            conv_block(deep, deep, dilation=4),
+            conv_block(deep, deep, dilation=4),
         )
 
-        self.pyramid = PyramidPoolingModule(in_channels=512, pool_sizes=pool_sizes)
+        self.pyramid = PyramidPoolingModule(in_channels=deep, pool_sizes=pool_sizes)
 
         self.bottleneck = nn.Sequential(
-            conv_block(self.pyramid.out_channels, 512),
+            conv_block(self.pyramid.out_channels, deep),
             nn.Dropout2d(p=dropout),
         )
-        self.classifier = nn.Conv2d(512, num_classes, kernel_size=1)
+        self.classifier = nn.Conv2d(deep, num_classes, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the network.
@@ -514,14 +529,21 @@ def create_model(
     architecture: Optional[str] = None,
     in_channels: int = config.INPUT_CHANNELS,
     num_classes: int = config.NUM_CLASSES,
+    base_channels: Optional[int] = None,
 ) -> nn.Module:
     """Build the architecture named by the configuration.
+
+    The width comes from config.MODEL_BASE_CHANNELS, which is set so the three
+    architectures end up with comparable parameter counts. Without that the
+    comparison would confound architecture with capacity.
 
     Args:
         architecture: One of AVAILABLE_ARCHITECTURES. Defaults to
             config.ARCHITECTURE.
         in_channels: Channels of the input tensor.
         num_classes: Segmentation classes to predict.
+        base_channels: Width override. Defaults to the matched value for the
+            architecture.
 
     Returns:
         The model, on the CPU. Move it to the device explicitly.
@@ -556,7 +578,14 @@ def create_model(
             f"Available: {list(AVAILABLE_ARCHITECTURES)}.{detail}"
         )
 
-    return builders[architecture](in_channels=in_channels, num_classes=num_classes)
+    if base_channels is None:
+        base_channels = config.MODEL_BASE_CHANNELS[architecture]
+
+    return builders[architecture](
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+    )
 
 
 def count_parameters(module: nn.Module) -> int:

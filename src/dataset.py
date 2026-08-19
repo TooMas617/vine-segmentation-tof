@@ -614,6 +614,13 @@ def create_dataloaders(
     samples in the same order every epoch, or per-batch numbers stop being
     comparable across runs.
 
+    The training loader also drops a trailing batch of a single sample. Batch
+    normalisation cannot compute statistics from one value per channel, and
+    PSPNet's 1x1 pyramid level reduces the feature map to exactly that, so a
+    lone final sample would stop training mid-epoch. Validation and test are
+    unaffected: in evaluation mode batch normalisation uses its running
+    statistics, so every sample is kept.
+
     Args:
         transforms: Mapping with the "train" and "val_test" pipelines, as
             returned by build_transforms(). None leaves the samples unresized,
@@ -637,9 +644,10 @@ def create_dataloaders(
     dataloaders: Dict[str, DataLoader] = {}
 
     for split_name in SPLIT_NAMES:
+        is_training = split_name == "train"
         transform = None
         if transforms is not None:
-            transform = transforms["train"] if split_name == "train" else transforms["val_test"]
+            transform = transforms["train"] if is_training else transforms["val_test"]
 
         dataset = VineSegmentationDataset(
             split_name=split_name,
@@ -647,10 +655,15 @@ def create_dataloaders(
             load_skeleton=load_skeleton,
         )
 
+        # Only a trailing batch of exactly one is a problem, so the samples are
+        # dropped only when there would be one.
+        drop_last = is_training and len(dataset) % batch_size == 1
+
         dataloaders[split_name] = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=split_name == "train",
+            shuffle=is_training,
+            drop_last=drop_last,
             num_workers=num_workers,
             persistent_workers=num_workers > 0,
             worker_init_fn=config.seed_worker,

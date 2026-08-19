@@ -381,8 +381,23 @@ EARLY_STOPPING_CONFIG: Dict[str, Any] = {
 # 7 - MODEL CONFIGURATION
 # =====================================================
 
-# Architecture family: ["UNet", "UNetPlusPlus", "SegNet", "PSPNet"]
+# Architecture family: ["UNet", "SegNet", "PSPNet"]
 ARCHITECTURE: str = "UNet"
+
+# Width of each architecture, picked so the three end up with comparable
+# capacity — 7.1, 7.1 and 8.0 million parameters, a spread of 13 %.
+#
+# At their natural widths they differ by a factor of four, and a comparison run
+# that way would confound architecture with size: if U-Net won, there would be
+# no telling whether skip connections suit thin structures or whether it simply
+# had four times the parameters. Matching downwards rather than upwards also
+# costs about half the compute, and 8 million parameters is a better fit for a
+# training set of 256 samples than 31 million.
+MODEL_BASE_CHANNELS: Dict[str, int] = {
+    "UNet": 32,
+    "SegNet": 64,
+    "PSPNet": 48,
+}
 
 # Encoder: "custom" for architectures trained from scratch, or an SMP encoder
 # name such as "resnet34" / "efficientnet-b0" for pre-trained backbones.
