@@ -1293,6 +1293,31 @@ con quelli di Majeed et al.: oltre a essere più stretto, il nostro è addestrat
 da zero mentre il loro parte da VGG16 pre-addestrato. Il confronto interno fra
 le tre architetture resta valido; quello con i numeri pubblicati no.
 
+*Due esperimenti distinti.* Il pareggio di capacità serve al **confronto fra
+architetture** e non pretende di produrre il modello migliore in assoluto. Sono
+due domande diverse:
+
+| Esperimento | Configurazione | Risponde a |
+|---|---|---|
+| Confronto | tre architetture a capacità pareggiata | quale architettura è più adatta al problema |
+| Configurazione migliore | architettura vincente, larghezza scelta per resa | qual è il massimo ottenibile |
+
+Il secondo costa una run aggiuntiva e non è scontato che la larghezza maggiore
+vinca: su 256 campioni di training un modello da 31 milioni di parametri ha un
+rischio di overfitting concreto.
+
+*Nota sui risultati del notebook monolitico.* I valori ottenuti prima del
+refactoring **non costituiscono un riferimento**, indipendentemente dalla
+dimensione del modello: erano su una partizione diversa (93 immagini, impronta
+`d57f79eb`), con metriche mediate sui batch anziché accumulate sul dataset —
+quindi lo stesso identico modello riporterebbe oggi numeri diversi — con 24
+immagini a canali incoerenti (sezione 4) e con una skeleton loss che non
+contribuiva al gradiente (sezione 7.2).
+
+*Conseguenza sulla tracciabilità.* `experiments.csv` deve registrare
+`base_channels` accanto all'architettura: due run della stessa architettura a
+larghezze diverse sarebbero altrimenti indistinguibili.
+
 ### Un difetto trovato durante la misura
 
 Il benchmark ha fatto emergere che **PSPNet fallisce in modalità training con
