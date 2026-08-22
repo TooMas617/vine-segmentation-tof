@@ -225,9 +225,22 @@ the `splits_hash`.
 cross-run comparison. All four notebooks and all eight modules are written and
 exercised locally.
 
+`notebooks/00_Colab_Smoke_Test.ipynb` has run end to end on a Colab T4 and
+everything passed: `build_transforms()`, CUDA, `num_workers > 0`, a real resume
+from checkpoint, and the sentinel that proves no fabricated pixel reaches the
+model. Measured there: Drive is 35x slower per file than the session disk, so
+the notebooks copy the project to `/content` and `sync_results_to_drive()` must
+be called before a session ends. Epoch time 38 s at batch 4, peak memory
+1.25 GB (PSPNet) to 5.32 GB (SegNet) of the 15.64 GB available.
+
 Next: **run the experiments on Colab.** Three architectures at matched
-capacity, plus the ablation with and without the skeleton recall loss. Nothing
-further needs writing to start.
+capacity, plus the ablation with and without the skeleton recall loss — six
+runs, roughly 4.5 hours. Set `config.ARCHITECTURE` and
+`config.SKELETON_LOSS_CONFIG["enabled"]` from a notebook cell rather than by
+editing `config.py`: `build_config()` deep-copies at call time, so the run's
+`config.json` records the override, and nothing has to be re-copied to
+`/content`. Run the three baselines first, so an interrupted session still
+leaves a complete architecture comparison. Nothing further needs writing.
 
 The experiments must include an **ablation with and without the skeleton
 recall loss**. Theory predicts it trades precision for recall, and the model
