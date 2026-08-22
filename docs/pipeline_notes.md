@@ -897,32 +897,80 @@ dipende dall'asse scelto.)*
 Il modello viene quindi valutato a un ingrandimento **inferiore a qualunque
 cosa abbia visto in addestramento**: 0,80 contro un minimo di 0,84.
 
-**Il vincolo che limita la correzione.** `CenterCrop` alla dimensione target
-richiede che l'immagine sia almeno grande quanto il ritaglio, cioè
-`target · f · s ≥ target`, ovvero **`f · s ≥ 1`** — che è esattamente la
-condizione dell'ingrandimento di valutazione. Uno schema
-*ingrandisci-e-ritaglia* può quindi **raggiungere** la scala di valutazione ma
-non scendere sotto: il limite si tocca quando il ritaglio consuma l'immagine
-intera.
+**Il vincolo vero non è il ritaglio, è il bordo riflesso.** `CenterCrop`
+richiede solo `f · s ≥ 1`, ma quella condizione garantisce che il ritaglio *sia
+possibile*, non che cada su pixel reali. Ruotando di 15° un quadrato di lato
+`L`, il quadrato inscritto fatto di soli pixel reali ha lato
+`L / (cos 15° + sin 15°) = L / 1,2247`. Il ritaglio resta dentro finché
 
-**Valore adottato.** `scale_limit` passa da `(-0,30 ; 0,30)` a
-`(-0,32 ; 0,30)`, cioè `s ∈ [0,68 ; 1,30]`. Con `f = 1,5` questo dà
-`f · s = 1,02` all'estremo inferiore: il minimo di training scende da 0,84 a
-0,816, passando dal 5 % al 2 % sopra la scala di valutazione. Il valore esatto
-che azzererebbe il divario è `s = 2/3`, ma `f · s` sarebbe esattamente 1 e un
-arrotondamento a 511 pixel farebbe fallire il ritaglio; 0,68 lascia 10 pixel di
-margine.
+```
+f · s ≥ cos 15° + sin 15° = 1,2247
+```
 
-**Cosa questa modifica non risolve.** `RandomScale` ha `p = 0,5`: metà dei
-campioni conserva `s = 1,0`, quindi ingrandimento 1,20, il 50 % più zoomato
-della valutazione. Spostare anche quel caso richiederebbe di abbassare `f` da
-1,5 a circa 1,25, che porterebbe il caso tipico a 1,00. Il margine geometrico
-basterebbe — una rotazione di 15° su un lato `L` lascia un quadrato inscritto
-di `L / (cos 15° + sin 15°) = L / 1,225`, cioè 522 px su 640, più dei 512
-necessari — ma `OpticalDistortion` non ha un margine calcolabile
-analiticamente e richiederebbe una verifica visiva. Rimandato: se i risultati
-mostrassero un divario anomalo fra training e validation, è il primo posto
-dove guardare.
+che con `f = 1,5` significa **`s ≥ 0,8165`**, ben più severo di `s ≥ 2/3`.
+
+**Difetto trovato con questa misura.** Il bound precedente, `s ∈ [0,68 ; 1,30]`,
+violava la condizione nel 22 % dei casi in cui `RandomScale` si attivava. Misura
+con sentinella su `cv2.warpAffine` — immagine costante, bordo riempito a zero,
+si contano i pixel del ritaglio che non valgono la costante:
+
+| `s` | lato intermedio | pixel riflessi nel ritaglio |
+|---|---|---|
+| 0,68 | 522 | **8,58 %** |
+| 0,80 | 614 | 0,15 % |
+| 0,8165 | 627 | 0,002 % |
+| **0,82** | 629 | **0,000 %** |
+
+Il pre-ingrandimento esisteva proprio per evitare i pixel riflessi, e il bound
+scelto per avvicinarsi alla scala di valutazione li stava reintroducendo.
+
+Da notare che alla soglia analitica esatta resta lo 0,002 %: l'interpolazione
+bilineare campiona un intorno 2×2 e sborda di un pixel oltre il limite
+geometrico. La soglia calcolata non basta da sola; serve la misura.
+
+**Valore adottato.** `scale_limit = (-0,18 ; 0,30)`, cioè `s ∈ [0,82 ; 1,30]`.
+Verificato a 0,000 % su tutti gli angoli del range e con entrambe le
+convenzioni di arrotondamento (`albumentations` usa `round`, quindi lato 630).
+
+**Il pavimento geometrico.** Un campione ruotato di ±15° e ritagliato senza
+pixel inventati è ingrandito di **almeno 1,2247** rispetto alla valutazione, e
+questo *non dipende da `f`*: abbassare il pre-ingrandimento alza in proporzione
+la soglia su `s`. L'unica manopola che sposta il pavimento è `ROTATION_LIMIT`
+(a 10° diventa 1,158, a 5° 1,083). Ingrandisci-e-ritaglia non può quindi
+raggiungere la scala di valutazione, contrariamente a quanto affermava la
+versione precedente di questa sezione: quella conclusione considerava solo la
+fattibilità del ritaglio.
+
+**Ramo identità.** Poiché il pavimento è invalicabile, la scala di valutazione
+viene coperta da un secondo ramo, **alternativo ed esclusivo**: con
+`IDENTITY_PROBABILITY = 0,5` il campione salta del tutto la geometria e riceve
+il solo ridimensionamento, cioè esattamente la pipeline di validation. Un
+campione è o la vista di valutazione o una vista perturbata, mai un compromesso.
+
+| ramo | `f · s` | ingrandimento | area visibile |
+|---|---|---|---|
+| val/test | 1,00 | 0,80 | 100 % |
+| train, identità (50 %) | 1,00 | 0,80 | 100 % |
+| train, geometrico, `s = 0,82` | 1,23 | 0,98 | 81 % |
+| train, geometrico, `s = 1,30` | 1,95 | 1,56 | 26 % |
+
+Resta un intervallo scoperto fra 0,80 e 0,98 che nessun campione occupa. Non è
+un problema — la scala su cui il modello è valutato è coperta *esattamente* dal
+ramo identità — ma è una caratteristica dichiarata della distribuzione.
+
+**Perché scala e non ritaglio casuale.** Una traslazione casuale simulerebbe
+una telecamera che inquadra altrove, cosa che in vigneto non accade: la
+telecamera guarda sempre la pianta, al più da distanza leggermente diversa. Una
+variazione di scala *è* un campo visivo diverso; un ritaglio casuale sarebbe una
+scena diversa. Per lo stesso motivo si è escluso lo specchiamento come rimedio
+al bordo: un vigneto riflesso non è una struttura che il modello incontrerà mai.
+
+**Distorsione ottica.** `OpticalDistortion` in modalità barrel campiona anch'essa
+da fuori e non ha un margine in forma chiusa. Viene quindi misurata invece che
+derivata: la cella 3.4 del notebook 00 fa passare un'immagine costante per la
+catena completa con bordo a sentinella e conta i pixel provenienti da fuori,
+con `assert` a zero. L'affermazione «nessun pixel inventato raggiunge il
+modello» è verificata sulla catena intera, non solo sulla rotazione.
 
 ### Interpolazione bilineare su un depth colorato — postilla
 

@@ -154,6 +154,19 @@ Full rationale in `docs/pipeline_notes.md`.
   channel count. Plain `imread()` silently converts to 8-bit BGR.
 - **Only flips are used offline.** They preserve labels exactly: no
   interpolation, no invented border pixels.
+- **Online augmentation has two exclusive branches.** Half the training samples
+  take the evaluation pipeline unchanged; the other half are enlarged,
+  perturbed and centre-cropped, so no pixel is ever invented. A sample rotated
+  by ±15° and cropped without fabricated pixels is magnified by at least
+  `cos15 + sin15 = 1.2247` *whatever the margin factor* — only `ROTATION_LIMIT`
+  moves that floor — so enlarge-and-crop alone can never show the model the
+  framing it is scored on. `RANDOM_SCALE_LIMIT` is `(-0.18, 0.30)` because
+  below `s = 0.82` the centre crop starts eating reflected border: at the old
+  `0.68` it was 8.6 % of the crop.
+- **The geometry scales, it never translates.** A random crop would simulate a
+  camera framing somewhere without vines, which cannot happen. A scale change
+  is a different field of view, which is the one variation the camera really
+  produces. Mirroring is rejected for the same reason.
 - **Channel counts are reconciled at read time**, in
   `read_modality_image()`, not by rewriting `data/raw` and not in the Dataset.
   One rule, one place, three consumers. Every file in `data/augmented` is
