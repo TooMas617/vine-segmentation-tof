@@ -1391,6 +1391,42 @@ stessa run. Vengono salvati due checkpoint — il migliore secondo la metrica
 monitorata e l'ultimo — perché servono a due scopi diversi: il primo per
 valutare, il secondo per riprendere.
 
+**History e checkpoint scritti su cadenze diverse.** Costano tre ordini di
+grandezza l'uno dall'altro, e servono a cose diverse:
+
+| Artefatto | Dimensione | Cadenza | A cosa serve |
+|---|---|---|---|
+| `history.json` | ~8 KB | **ogni epoca** | le metriche di una run interrotta sopravvivono in forma leggibile |
+| `last.pt` | ~83 MB | ogni `CHECKPOINT_INTERVAL` epoche e alla fine | il punto da cui il training riprende |
+| `best.pt` | ~83 MB | a ogni miglioramento | il modello con cui si valuta |
+
+*Motivazione.* Scrivere `last.pt` a ogni epoca costerebbe 5,8 GB su 70 epoche,
+in scritture sincrone dentro il ciclo — costo sensibile su Drive. Con
+`CHECKPOINT_INTERVAL = 10` scende a 580 MB, e il prezzo è ripetere al massimo
+dieci epoche dopo un'interruzione. La history invece pesa pochi kilobyte e
+viene riscritta sempre: perdere i numeri di sessanta epoche perché la sessione è
+caduta all'epoca sessantuno sarebbe molto peggio che ripeterne dieci.
+
+`last.pt` viene scritto **anche all'ultima epoca**, a prescindere dall'intervallo,
+così lo stato finale non è mai un multiplo stantio della cadenza.
+
+**Ripresa di una run interrotta.** `find_resume_point(run_id)` restituisce il
+checkpoint se esiste, e `train_model(..., resume_from=...)` ripristina pesi,
+stato dell'ottimizzatore e dello scheduler, history, valore migliore e contatore
+delle epoche. `num_epochs` resta contato **dall'inizio della run**, non dal punto
+di ripresa: riprendere una run interrotta a 31 con `num_epochs=70` addestra le
+epoche da 32 a 70.
+
+*Verificato:* una run interrotta a 3 epoche e ripresa fino a 6 produce una
+history identica, valore per valore, a una run continua di 6 epoche. Le curve
+sono le stesse che si otterrebbero se non si fosse mai fermata.
+
+*Il `config.json` non viene sovrascritto dalla ripresa.* Descrive le
+impostazioni che le epoche precedenti hanno effettivamente usato; riscriverlo
+con quelle di oggi — commit compreso — renderebbe la run non interpretabile.
+L'evento di ripresa è invece registrato in `history.json` come
+`resumed_from_epoch`.
+
 **L'architettura è registrata nel checkpoint e verificata al caricamento.**
 Caricare i pesi di SegNet dentro un PSPNet produrrebbe un errore oscuro o, in
 casi sfortunati, un caricamento parziale silenzioso.

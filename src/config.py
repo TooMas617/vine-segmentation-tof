@@ -378,6 +378,16 @@ EARLY_STOPPING_CONFIG: Dict[str, Any] = {
     "min_delta": 1e-4,
 }
 
+# How often the resumable checkpoint is rewritten, in epochs. It holds the
+# weights and the optimiser state, so it costs tens of megabytes each time,
+# whereas the metrics history is a few kilobytes and is written every epoch.
+# The two are saved on different schedules for that reason: losing an
+# interrupted run's numbers would be worse than repeating a few epochs.
+#
+# The value bounds how much training an interruption can cost: at 10, a session
+# that dies resumes at most ten epochs back.
+CHECKPOINT_INTERVAL: int = 10
+
 # =====================================================
 # 7 - MODEL CONFIGURATION
 # =====================================================

@@ -168,6 +168,7 @@ def save_checkpoint(
     tracker: MetricsTracker,
     best_value: Optional[float],
     best_epoch: Optional[int],
+    elapsed_seconds: float = 0.0,
 ) -> None:
     """Write everything needed to resume or to evaluate.
 
@@ -183,6 +184,8 @@ def save_checkpoint(
         tracker: History of the run so far.
         best_value: Best value of the monitored metric so far.
         best_epoch: Epoch that produced it.
+        elapsed_seconds: Training time accumulated so far, across resumes, so
+            the reported duration of a run interrupted twice is still its total.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -195,12 +198,78 @@ def save_checkpoint(
             "history": tracker.history,
             "best_value": best_value,
             "best_epoch": best_epoch,
+            "elapsed_seconds": elapsed_seconds,
             "architecture": config.ARCHITECTURE,
             "base_channels": config.MODEL_BASE_CHANNELS.get(config.ARCHITECTURE),
             "input_channels": config.INPUT_CHANNELS,
             "num_classes": config.NUM_CLASSES,
         },
         path,
+    )
+
+
+def find_resume_point(run_id: str, experiments_dir: Optional[Path] = None) -> Optional[Path]:
+    """Return the checkpoint a run should be resumed from, if there is one.
+
+    Args:
+        run_id: Identifier of the run.
+        experiments_dir: Folder holding the runs. Defaults to
+            config.EXPERIMENTS_DIR.
+
+    Returns:
+        Path of the resumable checkpoint, or None if the run has none.
+    """
+    if experiments_dir is None:
+        experiments_dir = config.EXPERIMENTS_DIR
+
+    candidate = experiments_dir / run_id / "checkpoints" / LAST_CHECKPOINT_FILENAME
+
+    return candidate if candidate.exists() else None
+
+
+def _save_history(
+    run_root: Path,
+    run_id: str,
+    tracker: MetricsTracker,
+    best_epoch: Optional[int],
+    best_value: Optional[float],
+    elapsed_seconds: float,
+    stopped_early: bool,
+    completed: bool,
+    resumed_from_epoch: Optional[int],
+) -> None:
+    """Write the metrics history, overwriting the previous version.
+
+    Called after every epoch rather than once at the end. It weighs a few
+    kilobytes against the checkpoint's tens of megabytes, and it is the only
+    place the numbers of an interrupted run survive in readable form.
+
+    Args:
+        run_root: Folder of the run.
+        run_id: Identifier of the run.
+        tracker: History so far.
+        best_epoch: Epoch with the best monitored value.
+        best_value: That value.
+        elapsed_seconds: Training time accumulated across resumes.
+        stopped_early: Whether early stopping triggered.
+        completed: Whether the loop reached its last epoch.
+        resumed_from_epoch: Epoch this invocation started at, when resuming.
+    """
+    payload = {
+        "run_id": run_id,
+        "epochs_run": len(tracker.history["val"]),
+        "completed": completed,
+        "stopped_early": stopped_early,
+        "resumed_from_epoch": resumed_from_epoch,
+        "best_epoch": best_epoch,
+        "best_value": best_value,
+        "monitor_metric": config.MONITOR_METRIC,
+        "total_seconds": elapsed_seconds,
+        "history": tracker.history,
+    }
+
+    (run_root / HISTORY_FILENAME).write_text(
+        json.dumps(payload, indent=2, default=float), encoding="utf-8"
     )
 
 
@@ -386,13 +455,23 @@ def train_model(
     num_epochs: int = config.NUM_EPOCHS,
     device: Optional[torch.device] = None,
     track_cldice: bool = True,
+    resume_from: Optional[Path] = None,
+    checkpoint_interval: int = config.CHECKPOINT_INTERVAL,
     verbose: bool = True,
 ) -> Tuple[MetricsTracker, Path]:
     """Train a model, keeping the best checkpoint by the monitored metric.
 
-    Each epoch runs training then validation, records both, updates the
-    schedule and saves a checkpoint whenever the monitored metric improves. The
-    last epoch is saved as well, so an interrupted run can resume.
+    Each epoch runs training then validation, records both and updates the
+    schedule. Two artefacts are written on different schedules, because they
+    cost three orders of magnitude apart:
+
+        history.json  every epoch, a few kilobytes — the numbers of an
+                      interrupted run survive in readable form
+        last.pt       every checkpoint_interval epochs and at the end, tens of
+                      megabytes — the point training resumes from
+
+    The best checkpoint is written whenever the monitored metric improves,
+    whatever the interval.
 
     Args:
         model: Model to train, already on the device.
@@ -404,10 +483,19 @@ def train_model(
         skeleton_criterion: Skeleton recall loss, or None. Running once with
             and once without is the ablation described in section 7.6 of the
             notes.
-        run_id: Identifier of the run. Generated when omitted.
-        num_epochs: Maximum number of epochs.
+        run_id: Identifier of the run. Generated when omitted, or taken from
+            the checkpoint's folder when resuming, so a resumed run keeps
+            writing where it started.
+        num_epochs: Epoch to stop at, counted from the start of the run and not
+            from the resume point: resuming a run interrupted at 31 with
+            num_epochs=70 trains epochs 32 to 70.
         device: Device to train on. Defaults to config.DEVICE.
         track_cldice: Whether clDice is computed on validation each epoch.
+        resume_from: Checkpoint to continue from, as returned by
+            find_resume_point(). Restores the weights, the optimiser and
+            scheduler state, the history, the best value and the epoch counter,
+            so the run continues as though it had never stopped.
+        checkpoint_interval: How often the resumable checkpoint is rewritten.
         verbose: Whether progress is printed.
 
     Returns:
@@ -415,47 +503,80 @@ def train_model(
     """
     if device is None:
         device = config.DEVICE
-    if run_id is None:
-        run_id = config.build_run_id()
     if optimizer is None:
         optimizer = create_optimizer(model)
     if scheduler is None:
         scheduler = create_scheduler(optimizer)
-
-    run_paths = config.get_run_dir(run_id)
-    checkpoints_dir = run_paths["checkpoints"]
-
-    # The settings are written before the first epoch: a run interrupted after
-    # five minutes still leaves behind what it was trying to do.
-    # build_config returns a deep copy, so adding to it here cannot reach back
-    # into the config module.
-    run_config = config.build_config(run_id)
-    run_config["model"]["parameters"] = sum(
-        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
-    )
-    # "enabled" says what was configured; "applied" says what actually ran.
-    run_config["skeleton_loss"]["applied"] = skeleton_criterion is not None
-    run_config["git_commit"] = git_commit_hash()
-    (run_paths["root"] / CONFIG_FILENAME).write_text(
-        json.dumps(run_config, indent=2), encoding="utf-8"
-    )
 
     tracker = MetricsTracker()
     monitor_metric = config.MONITOR_METRIC
     monitor_mode = config.MONITOR_MODE
     best_value: Optional[float] = None
     best_epoch: Optional[int] = None
+    start_epoch = 1
+    elapsed_before = 0.0
+    resumed_from_epoch: Optional[int] = None
+
+    if resume_from is not None:
+        checkpoint = load_checkpoint(resume_from, model, optimizer, scheduler, device=device)
+        tracker.history = checkpoint["history"]
+        best_value = checkpoint.get("best_value")
+        best_epoch = checkpoint.get("best_epoch")
+        elapsed_before = float(checkpoint.get("elapsed_seconds", 0.0))
+        start_epoch = int(checkpoint["epoch"]) + 1
+        resumed_from_epoch = start_epoch
+        # The run continues in the folder it started in, so its history and its
+        # checkpoints stay together.
+        if run_id is None:
+            run_id = resume_from.parent.parent.name
+
+    if run_id is None:
+        run_id = config.build_run_id()
+
+    run_paths = config.get_run_dir(run_id)
+    checkpoints_dir = run_paths["checkpoints"]
+    config_path = run_paths["root"] / CONFIG_FILENAME
+
+    # Written before the first epoch: a run interrupted after five minutes
+    # still leaves behind what it was trying to do. On a resume the original is
+    # left in place — it describes the settings the earlier epochs actually
+    # used, which is what makes the run interpretable.
+    if not config_path.exists():
+        # build_config returns a deep copy, so adding to it here cannot reach
+        # back into the config module.
+        run_config = config.build_config(run_id)
+        run_config["model"]["parameters"] = sum(
+            parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+        )
+        # "enabled" says what was configured; "applied" says what actually ran.
+        run_config["skeleton_loss"]["applied"] = skeleton_criterion is not None
+        run_config["git_commit"] = git_commit_hash()
+        config_path.write_text(json.dumps(run_config, indent=2), encoding="utf-8")
+
     best_checkpoint = checkpoints_dir / BEST_CHECKPOINT_FILENAME
+    last_checkpoint = checkpoints_dir / LAST_CHECKPOINT_FILENAME
     skeleton_weight = config.SKELETON_LOSS_CONFIG["weight"]
     early_stopping = config.EARLY_STOPPING_CONFIG
     stopped_early = False
 
     if verbose:
         _print_run_header(run_id, model, num_epochs, skeleton_criterion, device)
+        if resumed_from_epoch is not None:
+            best = "none yet" if best_value is None else f"{best_value:.4f} at epoch {best_epoch}"
+            print(f"[RESUME] Continuing at epoch {resumed_from_epoch}, "
+                  f"{len(tracker.history['val'])} epoch(s) already recorded, best {best}.")
+            print("=" * 70)
+
+    if start_epoch > num_epochs:
+        if verbose:
+            print(f"[INFO] Nothing to do: the run already reached epoch "
+                  f"{start_epoch - 1} of {num_epochs}.")
+        return tracker, best_checkpoint
 
     training_started = time.perf_counter()
+    epoch = start_epoch - 1
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(start_epoch, num_epochs + 1):
         epoch_started = time.perf_counter()
 
         train_metrics = run_epoch(
@@ -498,47 +619,51 @@ def train_model(
         current = val_metrics.get(monitor_metric, float("nan"))
         improved = _is_improvement(current, best_value, monitor_mode)
 
+        elapsed = elapsed_before + (time.perf_counter() - training_started)
+
         if improved:
             best_value, best_epoch = current, epoch
             save_checkpoint(
-                best_checkpoint, model, optimizer, scheduler, epoch, tracker, best_value, best_epoch
+                best_checkpoint, model, optimizer, scheduler, epoch, tracker,
+                best_value, best_epoch, elapsed,
             )
-
-        save_checkpoint(
-            checkpoints_dir / LAST_CHECKPOINT_FILENAME,
-            model, optimizer, scheduler, epoch, tracker, best_value, best_epoch,
-        )
 
         if verbose:
             _print_epoch_line(epoch, num_epochs, train_metrics, val_metrics, monitor_metric, improved)
 
-        if early_stopping["enabled"] and tracker.check_early_stopping(
+        stopped_early = early_stopping["enabled"] and tracker.check_early_stopping(
             patience=early_stopping["patience"],
             metric=monitor_metric,
             mode=monitor_mode,
             min_delta=early_stopping["min_delta"],
-        ):
-            stopped_early = True
+        )
+        is_last_epoch = epoch == num_epochs or stopped_early
+
+        # The history is small enough to rewrite every epoch, and it is the
+        # only readable record an interrupted run leaves behind.
+        _save_history(
+            run_root=run_paths["root"], run_id=run_id, tracker=tracker,
+            best_epoch=best_epoch, best_value=best_value, elapsed_seconds=elapsed,
+            stopped_early=stopped_early, completed=is_last_epoch,
+            resumed_from_epoch=resumed_from_epoch,
+        )
+
+        # The resumable checkpoint is not: it carries the weights and the
+        # optimiser state, so it is rewritten on an interval — and always at
+        # the end, so the final state is never a stale multiple of it.
+        if epoch % checkpoint_interval == 0 or is_last_epoch:
+            save_checkpoint(
+                last_checkpoint, model, optimizer, scheduler, epoch, tracker,
+                best_value, best_epoch, elapsed,
+            )
+
+        if stopped_early:
             if verbose:
                 print(f"\n[STOP] {monitor_metric} has not improved for "
                       f"{early_stopping['patience']} epochs.")
             break
 
-    total_seconds = time.perf_counter() - training_started
-
-    history_payload = {
-        "run_id": run_id,
-        "epochs_run": len(tracker.history["val"]),
-        "stopped_early": stopped_early,
-        "best_epoch": best_epoch,
-        "best_value": best_value,
-        "monitor_metric": monitor_metric,
-        "total_seconds": total_seconds,
-        "history": tracker.history,
-    }
-    (run_paths["root"] / HISTORY_FILENAME).write_text(
-        json.dumps(history_payload, indent=2, default=float), encoding="utf-8"
-    )
+    total_seconds = elapsed_before + (time.perf_counter() - training_started)
 
     if verbose:
         print()
