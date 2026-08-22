@@ -928,9 +928,48 @@ Da notare che alla soglia analitica esatta resta lo 0,002 %: l'interpolazione
 bilineare campiona un intorno 2×2 e sborda di un pixel oltre il limite
 geometrico. La soglia calcolata non basta da sola; serve la misura.
 
-**Valore adottato.** `scale_limit = (-0,18 ; 0,30)`, cioè `s ∈ [0,82 ; 1,30]`.
-Verificato a 0,000 % su tutti gli angoli del range e con entrambe le
-convenzioni di arrotondamento (`albumentations` usa `round`, quindi lato 630).
+**La soglia analitica non basta: la catena non è la rotazione.** Fissato
+`s = 0,82`, la cella 3.4 del notebook 00 ha rilevato contaminazione su
+**una estrazione su 400**, per lo 0,12 % di quel ritaglio. Il fenomeno è stato
+riprodotto in locale ricostruendo la catena con `cv2` — replica validata contro
+il dato di Colab, 0,10 % di estrazioni contaminate contro 0,25 % osservato,
+compatibili dato che l'osservazione poggia su un solo evento.
+
+Isolando i transform a `s = 0,82`:
+
+| combinazione | contaminazione |
+|---|---|
+| scala + rotazione | 0,0000 % |
+| scala + distorsione | 0,0000 % |
+| **scala + rotazione + distorsione** | **0,7721 %** |
+
+Ognuno da solo è pulito; è la **composizione** a rompere, e solo per `k > 0`,
+quando la distorsione campiona verso l'esterno e pesca nella fascia di bordo
+che la rotazione ha appena prodotto. La causa è l'assenza di margine: a
+`s = 0,82` il quadrato ruotato del ritaglio arriva a ±313,5 px su un'immagine
+di semilato 315, cioè **1,5 px di slack**. La soglia `0,8165` descriveva la
+rotazione *da sola* ed è stata applicata a una catena di tre trasformazioni.
+
+**Due rimedi misurati e scartati.** Invertire l'ordine (distorsione prima della
+rotazione) dà 54 combinazioni contaminate su 8125 contro 56: con il ritaglio
+così stretto ciascuna delle due può spingere l'altra oltre il bordo. Ridurre
+`DISTORTION_LIMIT` a ±0,02, cioè quasi spegnerla, lascia ancora 0,0141 %. La
+sola manopola efficace è il margine, cioè un pavimento più alto su `s`.
+
+**Valore adottato.** `scale_limit = (-0,10 ; 0,30)`, cioè `s ∈ [0,90 ; 1,30]`.
+Sulla catena completa la contaminazione si azzera a `s = 0,87`; si adotta 0,90
+per stare sopra la soglia e non appoggiati. Verificato a 0,0000 % su una
+griglia esaustiva di 13 671 combinazioni di scala, angolo e distorsione e su
+20 000 estrazioni Monte Carlo che riproducono i `p = 0,5` di ogni transform.
+
+**Costo.** Il pavimento di ingrandimento passa da 1,23 a 1,35, ma è la *coda*
+della distribuzione, non il centro: `RandomScale` si attiva metà delle volte,
+quindi il grosso del ramo geometrico resta a `s = 1`. L'ingrandimento medio
+complessivo passa da 1,272 a 1,288, cioè dell'1,2 %.
+
+**Alternativa scartata.** Con `ROTATION_LIMIT = 10°` la soglia scende a
+`s = 0,83` e il pavimento a 1,25: si recupera 0,10 di ingrandimento dimezzando
+il range di rotazione. Non conviene.
 
 **Il pavimento geometrico.** Un campione ruotato di ±15° e ritagliato senza
 pixel inventati è ingrandito di **almeno 1,2247** rispetto alla valutazione, e
@@ -951,12 +990,20 @@ campione è o la vista di valutazione o una vista perturbata, mai un compromesso
 |---|---|---|---|
 | val/test | 1,00 | 0,80 | 100 % |
 | train, identità (50 %) | 1,00 | 0,80 | 100 % |
-| train, geometrico, `s = 0,82` | 1,23 | 0,98 | 81 % |
+| train, geometrico, `s = 0,90` | 1,35 | 1,08 | 69 % |
 | train, geometrico, `s = 1,30` | 1,95 | 1,56 | 26 % |
 
-Resta un intervallo scoperto fra 0,80 e 0,98 che nessun campione occupa. Non è
-un problema — la scala su cui il modello è valutato è coperta *esattamente* dal
-ramo identità — ma è una caratteristica dichiarata della distribuzione.
+La distribuzione di scala vista dal modello è quindi **bimodale**: 50 % dei
+campioni esattamente alla scala di valutazione, 31 % fra 1,35 e 1,50, 19 % fra
+1,50 e 1,95. Resta scoperto l'intervallo fra 1,00 e 1,35, che nessun campione
+occupa.
+
+Non è un problema — la scala su cui il modello è valutato è coperta
+*esattamente* dal ramo identità — ma è una caratteristica dichiarata della
+distribuzione, non un effetto collaterale ignorato. Il vuoto discende dal
+pavimento geometrico della rotazione: chiuderlo richiederebbe di condizionare
+il range di scala al fatto che la rotazione sia scattata o meno, cosa non
+esprimibile dentro una `Compose` di `albumentations` senza codice dedicato.
 
 **Perché scala e non ritaglio casuale.** Una traslazione casuale simulerebbe
 una telecamera che inquadra altrove, cosa che in vigneto non accade: la
@@ -965,12 +1012,18 @@ variazione di scala *è* un campo visivo diverso; un ritaglio casuale sarebbe un
 scena diversa. Per lo stesso motivo si è escluso lo specchiamento come rimedio
 al bordo: un vigneto riflesso non è una struttura che il modello incontrerà mai.
 
-**Distorsione ottica.** `OpticalDistortion` in modalità barrel campiona anch'essa
-da fuori e non ha un margine in forma chiusa. Viene quindi misurata invece che
-derivata: la cella 3.4 del notebook 00 fa passare un'immagine costante per la
-catena completa con bordo a sentinella e conta i pixel provenienti da fuori,
-con `assert` a zero. L'affermazione «nessun pixel inventato raggiunge il
-modello» è verificata sulla catena intera, non solo sulla rotazione.
+**Perché la verifica sta nel notebook e non solo qui.** La taratura di
+`RANDOM_SCALE_LIMIT` viene da una ricostruzione della catena in `cv2`, non dal
+codice di `albumentations`. La replica è stata validata contro il fallimento
+osservato su Colab, ma resta una replica. La cella 3.4 del notebook 00 fa
+quindi passare un'immagine costante con bordo a sentinella per la catena vera,
+conta i pixel provenienti da fuori e ha un `assert` a zero: è quella, non
+questa sezione, l'autorità sull'affermazione «nessun pixel inventato raggiunge
+il modello».
+
+L'episodio è anche il motivo per cui la cella esiste. Il difetto era invisibile
+a occhio — un campione su 400, lo 0,1 % dei suoi pixel — e nessuna metrica di
+training lo avrebbe segnalato.
 
 ### Interpolazione bilineare su un depth colorato — postilla
 

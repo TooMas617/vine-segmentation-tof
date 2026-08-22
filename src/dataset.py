@@ -68,27 +68,45 @@ _UINT8_MAX: float = 255.0
 GEOMETRIC_MARGIN_FACTOR: float = 1.5
 
 # Random scale applied on top of that margin, as albumentations expects it:
-# the sampled factor is 1 + limit, so this range means s in [0.82, 1.30].
+# the sampled factor is 1 + limit, so this range means s in [0.90, 1.30].
 #
-# The lower bound is what makes the reflected border unreachable instead of
-# merely rare, and it is a geometric condition rather than a preference.
-# Rotating a square of side L by ROTATION_LIMIT degrees leaves an inscribed
-# axis-aligned square of L / (cos15 + sin15) made of real pixels only. The
-# crop stays inside it while target_size * f * s >= target_size * 1.2247,
-# that is f * s >= 1.2247, which at f = 1.5 means s >= 0.8165.
+# The lower bound is what keeps the reflected border unreachable, and it is a
+# measured quantity rather than a preference. The analytic part covers the
+# rotation only: rotating a square of side L by ROTATION_LIMIT degrees leaves
+# an inscribed axis-aligned square of L / (cos15 + sin15) made of real pixels,
+# so the crop stays inside it while f * s >= 1.2247, that is s >= 0.8165 at
+# f = 1.5.
 #
-# That threshold is measured, not just derived: at s = 0.8165 a sentinel run
-# through cv2.warpAffine still shows 0.002 per cent of the crop touched by the
-# border, because bilinear interpolation samples a 2x2 neighbourhood and bleeds
-# one pixel past the analytic bound. s = 0.82 gives 0.000 per cent at every
-# angle in the range. Below it the guarantee degrades fast: the previous bound
-# of 0.68 put 8.6 per cent reflected pixels inside the crop.
+# That bound is not sufficient, for two reasons that only measurement shows.
+#
+# Bilinear interpolation samples a 2x2 neighbourhood and bleeds one pixel past
+# the analytic limit, so s = 0.8165 still touches the border on 0.002 per cent
+# of the crop.
+#
+# More importantly the bound describes the rotation *alone*. At s = 0.82 the
+# rotated crop comes within 1.5 pixels of the image edge, and the distortion
+# applied afterwards samples outward from there: rotation alone and distortion
+# alone both stay clean, while together they contaminate up to 0.77 per cent of
+# the crop whenever k > 0. Swapping their order does not help — with the crop
+# that tight either one can push the other past the edge — and shrinking
+# DISTORTION_LIMIT does not either, since even +/-0.02 still leaves 0.014 per
+# cent. The only effective knob is slack, which means a higher floor on s.
+#
+# Measured on the full chain, contamination reaches zero at s = 0.87; 0.90 is
+# adopted so the value sits above the threshold rather than on it. Verified at
+# 0.0000 per cent over an exhaustive 13,671-point grid of scale, angle and
+# distortion, and over 20,000 Monte Carlo draws reproducing the p = 0.5 of each
+# transform. Cell 3.4 of notebook 00 re-checks it against albumentations itself.
+#
+# Raising the floor from 0.82 costs little: it moves the *tail* of the scale
+# distribution, not its centre. RandomScale fires half the time, so most of the
+# geometric branch sits at s = 1. Mean magnification goes from 1.272 to 1.288.
 #
 # A scale change is also the only variation this camera can genuinely produce:
 # it never frames somewhere without vines, it frames the same scene from
 # slightly nearer or further, which is a field of view and not an arbitrary
 # crop. That is why the geometry zooms rather than translating.
-RANDOM_SCALE_LIMIT: Tuple[float, float] = (-0.18, 0.30)
+RANDOM_SCALE_LIMIT: Tuple[float, float] = (-0.10, 0.30)
 
 # Rotation range in degrees, and the distortion strength applied after it.
 ROTATION_LIMIT: int = 15
