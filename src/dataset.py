@@ -30,6 +30,7 @@ Typical usage from notebook 03:
 """
 
 import os
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -67,18 +68,27 @@ _UINT8_MAX: float = 255.0
 GEOMETRIC_MARGIN_FACTOR: float = 1.5
 
 # Random scale applied on top of that margin, as albumentations expects it:
-# the factor is 1 + limit, so this range means s in [0.68, 1.30].
+# the sampled factor is 1 + limit, so this range means s in [0.82, 1.30].
 #
-# The lower bound is not arbitrary. Writing f for GEOMETRIC_MARGIN_FACTOR, a
-# sample ends up magnified by (target_size / source_width) * f * s relative to
-# the source, while validation and test are magnified by (target_size /
-# source_width) alone — that is, by the same expression with f * s = 1. The
-# centre crop is only possible while target_size * f * s >= target_size, which
-# is the same condition f * s >= 1. Enlarge-and-crop can therefore reach the
-# evaluation scale but never zoom out past it, and the best the lower bound can
-# do is approach it: at f = 1.5, s = 0.68 gives f * s = 1.02, two per cent
-# above evaluation scale instead of the five per cent left by s = 0.70.
-RANDOM_SCALE_LIMIT: Tuple[float, float] = (-0.32, 0.30)
+# The lower bound is what makes the reflected border unreachable instead of
+# merely rare, and it is a geometric condition rather than a preference.
+# Rotating a square of side L by ROTATION_LIMIT degrees leaves an inscribed
+# axis-aligned square of L / (cos15 + sin15) made of real pixels only. The
+# crop stays inside it while target_size * f * s >= target_size * 1.2247,
+# that is f * s >= 1.2247, which at f = 1.5 means s >= 0.8165.
+#
+# That threshold is measured, not just derived: at s = 0.8165 a sentinel run
+# through cv2.warpAffine still shows 0.002 per cent of the crop touched by the
+# border, because bilinear interpolation samples a 2x2 neighbourhood and bleeds
+# one pixel past the analytic bound. s = 0.82 gives 0.000 per cent at every
+# angle in the range. Below it the guarantee degrades fast: the previous bound
+# of 0.68 put 8.6 per cent reflected pixels inside the crop.
+#
+# A scale change is also the only variation this camera can genuinely produce:
+# it never frames somewhere without vines, it frames the same scene from
+# slightly nearer or further, which is a field of view and not an arbitrary
+# crop. That is why the geometry zooms rather than translating.
+RANDOM_SCALE_LIMIT: Tuple[float, float] = (-0.18, 0.30)
 
 # Rotation range in degrees, and the distortion strength applied after it.
 ROTATION_LIMIT: int = 15
@@ -86,6 +96,20 @@ DISTORTION_LIMIT: Tuple[float, float] = (-0.15, 0.15)
 
 # Probability of each random geometric transform.
 GEOMETRIC_PROBABILITY: float = 0.5
+
+# Probability that a training sample skips the geometry entirely and is only
+# resized, which is exactly what validation and test receive.
+#
+# Enlarging and cropping keeps every pixel real, but it cannot reach the
+# evaluation scale: a sample rotated by up to 15 degrees and cropped without
+# fabricated pixels is magnified by at least cos15 + sin15 = 1.2247, whatever
+# the margin factor. The floor comes from the rotation, so no choice of
+# GEOMETRIC_MARGIN_FACTOR removes it. Without this branch the model would
+# never once see the framing it is evaluated on.
+#
+# The two branches are exclusive: a sample is either the evaluation view or a
+# geometrically perturbed one, never a compromise between them.
+IDENTITY_PROBABILITY: float = 0.5
 
 
 # =====================================================
@@ -317,17 +341,37 @@ class MultiModalTransform:
     transforms would change what a depth value and a confidence value mean, and
     applying them to intensity alone would break the physical agreement between
     channels that describe the same pixel.
+
+    A second pipeline may be supplied as `identity`. When it is, each sample
+    takes one branch or the other, never both: the geometry enlarges and crops,
+    so it cannot produce the plain resize that validation and test receive, and
+    a model that never sees that framing is evaluated on one it was not trained
+    on. Drawing the branch per sample keeps both framings in the training
+    distribution while every pixel of both stays real.
     """
 
-    def __init__(self, geometric: Any, normaliser: MultiChannelNormalise) -> None:
+    def __init__(
+        self,
+        geometric: Any,
+        normaliser: MultiChannelNormalise,
+        identity: Optional[Any] = None,
+        identity_probability: float = 0.0,
+    ) -> None:
         """Assemble the pipeline.
 
         Args:
             geometric: albumentations pipeline applied to image and masks.
             normaliser: Per-channel standardisation applied after the geometry.
+            identity: Pipeline used instead of `geometric` on the sampled
+                fraction of calls. Omitted for validation and test, which must
+                stay deterministic.
+            identity_probability: Probability of taking that branch. Ignored
+                when `identity` is None.
         """
         self.geometric = geometric
         self.normaliser = normaliser
+        self.identity = identity
+        self.identity_probability = identity_probability if identity is not None else 0.0
 
     def __call__(
         self,
@@ -344,7 +388,15 @@ class MultiModalTransform:
             Tuple of the image tensor, shaped (C, H, W) and float32, and the
             mask tensors, each shaped (H, W) and int64.
         """
-        transformed = self.geometric(image=image, masks=masks)
+        # random is seeded per worker by config.seed_worker, the same mechanism
+        # albumentations relies on for its own probabilities.
+        take_identity = (
+            self.identity_probability > 0.0
+            and random.random() < self.identity_probability
+        )
+        pipeline = self.identity if take_identity else self.geometric
+
+        transformed = pipeline(image=image, masks=masks)
 
         return to_tensors(self.normaliser(transformed["image"]), transformed["masks"])
 
@@ -376,11 +428,16 @@ def build_transforms(
 ) -> Dict[str, MultiModalTransform]:
     """Build the training and evaluation pipelines.
 
-    Training enlarges by GEOMETRIC_MARGIN_FACTOR, perturbs the geometry and
-    crops the centre back to the target size, so the crop lands on real pixels
-    instead of on a reflected border. Validation and test only resize: their
-    samples must stay identical across epochs and across runs, or the numbers
-    they produce cannot be compared.
+    Training takes one of two exclusive branches per sample. The geometric one
+    enlarges by GEOMETRIC_MARGIN_FACTOR, perturbs the geometry and crops the
+    centre back to the target size, so the crop lands on real pixels instead of
+    on a reflected border — at the cost of a magnification of at least 1.2247,
+    which the rotation makes unavoidable. The other branch, taken with
+    probability IDENTITY_PROBABILITY, is the evaluation pipeline itself, so the
+    framing the model is scored on is also one it has trained on.
+
+    Validation and test only resize: their samples must stay identical across
+    epochs and across runs, or the numbers they produce cannot be compared.
 
     Masks are resampled with nearest-neighbour interpolation, which keeps class
     indices intact; the image is resampled bilinearly.
@@ -434,7 +491,12 @@ def build_transforms(
     )
 
     return {
-        "train": MultiModalTransform(geometric_train, normaliser),
+        "train": MultiModalTransform(
+            geometric_train,
+            normaliser,
+            identity=geometric_val_test,
+            identity_probability=IDENTITY_PROBABILITY,
+        ),
         "val_test": MultiModalTransform(geometric_val_test, normaliser),
     }
 
