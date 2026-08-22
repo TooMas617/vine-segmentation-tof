@@ -59,15 +59,22 @@ VineProject_ToF/
 ├── src/
 │   ├── config.py            paths, hyperparameters, class definitions, run ids
 │   ├── data_preparation.py  label maps, skeletons, split, offline augmentation
-│   └── exploration.py       inventory, class distribution, dataset statistics
+│   ├── exploration.py       inventory, class distribution, dataset statistics
+│   ├── dataset.py           normalisation, online augmentation, dataloaders
+│   ├── models.py            U-Net, SegNet, PSPNet, all from scratch
+│   ├── losses.py            Dice, combined, focal, skeleton recall
+│   ├── metrics.py           confusion matrix, clDice, history tracker
+│   ├── training.py          epoch loop, checkpoints, experiments.csv
+│   └── evaluation.py        predictions, error maps, cross-run comparison
 ├── notebooks/
 │   ├── 01_Data_Preparation.ipynb
-│   └── 02_EDA.ipynb
+│   ├── 02_EDA.ipynb
+│   ├── 03_Training.ipynb
+│   └── 04_Evaluation.ipynb
 ├── docs/
 │   └── pipeline_notes.md    design decisions and rationale (Italian)
 ├── data/                    NOT under version control
 │   ├── raw/                 intensity, depth, confidence, annotations
-│   ├── excluded/            unusable samples, with the reason (README.md)
 │   ├── processed/           label maps, skeletons, colored masks,
 │   │                        class_weights.json, channel_stats.json
 │   ├── splits/              splits.json, shared by every notebook
@@ -100,10 +107,11 @@ the same hardware: batch size is constrained by GPU memory and affects results.
 
 ## Dataset
 
-92 images, 5 classes: `Background`, `Cane`, `Cordon`, `Node`, `Other`.
-Split 64 / 14 / 14 (seed 42, hash `7afaa392`). One sample was moved to
-`data/excluded/` because its cordon was never annotated. The dataset is meant
-to grow to about 100 images, at which point the split changes again.
+100 images, 5 classes: `Background`, `Cane`, `Cordon`, `Node`, `Other`.
+Split 70 / 15 / 15 (seed 42, hash `62de0ec4`). This is the **final** dataset:
+it was brought to its definitive form before any experiment, because adding or
+removing a single image redraws the whole partition and makes earlier runs
+incomparable.
 
 Modalities: intensity (1 channel, `uint8`, 480×640), depth (3 channels,
 colorised), confidence (1 channel). Total input: 5 channels. Part of the raw
@@ -111,12 +119,12 @@ files store the single-channel modalities as three identical planes;
 `data_preparation.read_modality_image()` reconciles them, so every consumer
 sees the channel count `config.MODALITY_CHANNELS` declares.
 
-Class distribution is heavily imbalanced: Background 83.8 %, Cane 11.3 %,
+Class distribution is heavily imbalanced: Background 84.1 %, Cane 11.1 %,
 Cordon 3.6 %, Other 1.0 %, Node 0.27 %. `Node` is also absent from a quarter of
 the images.
 
 Annotations are LabelMe JSON. Two conventions coexist: 39 files use Italian
-labels and a finer taxonomy, 53 use English labels with better boundary
+labels and a finer taxonomy, 61 use English labels with better boundary
 accuracy. Both map onto the canonical classes through `config.LABEL_ALIASES`.
 
 ## Decisions already made — do not silently reverse
@@ -129,10 +137,14 @@ Full rationale in `docs/pipeline_notes.md`.
 - **The cordon skeleton is extracted from the unified binary mask**, then
   occluded pixels are removed. Skeletonising only visible pixels would produce
   a broken centreline.
-- **`dilation_kernel_size` stays at 2**, despite being asymmetric. At 3, three
-  images reach over 80 % skeleton coverage of the cane mask, which degenerates
-  clDice into an area-overlap measure. The affected images are young vineyard,
-  where canes are thinner.
+- **`dilation_kernel_size` stays at 2**, despite an even kernel being
+  asymmetric. The tube it produces covers 34.8 % of the cane mask; at 3 that
+  becomes 53.6 % and the skeleton recall loss stops rewarding the centreline
+  and turns into plain recall on the class. A kernel of 1 is not an option
+  either: `cv2.dilate` with a 1×1 kernel is the identity, so there would be no
+  tube at all — the very thing the reference method adds for gradient
+  stability. The asymmetry is cosmetic by comparison: connectivity comes from
+  the thinning, not from the dilation.
 - **The split is computed on original stems, before augmentation**, so flipped
   copies of one image cannot land in different partitions.
 - **Offline augmentation covers all modalities**, regardless of which ones the
@@ -158,9 +170,10 @@ Full rationale in `docs/pipeline_notes.md`.
   values left over from a different partition are reported instead of silently
   applied. The caller passes the current hash in: `config.py` cannot read the
   split itself without a circular import.
-- **Excluded samples are moved to `data/excluded/`, never deleted and never
-  filtered in code.** The pipeline starts from the JSON files in
-  `data/raw/annotations`, so a moved sample disappears on its own.
+- **A sample is taken out of the dataset by moving its files out of
+  `data/raw/`, never by filtering it in code.** The pipeline starts from the
+  JSON files in `data/raw/annotations`, so a moved sample disappears from
+  labels, split and augmented set on its own — and comes back the same way.
 
 ## Status and next steps
 

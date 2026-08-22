@@ -4,10 +4,10 @@ Documento di lavoro: registra **cosa fa** ogni fase della pipeline, **quali scel
 implementative** sono state prese e **perché**. Serve come base per il capitolo
 metodologico della tesi e come riferimento per chi riprenderà il codice.
 
-Ultimo aggiornamento: notebook `01_Data_Preparation` e `02_EDA` completati ed
-eseguiti; moduli `dataset.py`, `losses.py` e `metrics.py` scritti. Il dataset è
-passato da 93 a 92 immagini per l'esclusione di un campione con annotazione
-incompleta (sezione 3).
+Ultimo aggiornamento: pipeline completa — nove moduli e quattro notebook,
+verificati prima degli esperimenti (sezione 11). Il dataset è nella sua forma
+**definitiva: 100 immagini**, partizione 70/15/15 con impronta `62de0ec4`.
+Tutti i valori riportati in queste note si riferiscono a questa versione.
 
 Gli articoli di riferimento citati nelle sezioni 2 e 7 sono depositati in
 `reference/`, cartella esclusa dal versionamento. Sono tutti preprint arXiv e
@@ -31,7 +31,6 @@ VineProject_ToF/
 │   └── 02_EDA.ipynb
 ├── data/
 │   ├── raw/                intensity, depth, confidence, annotations
-│   ├── excluded/           campioni non utilizzabili, con il motivo (README.md)
 │   ├── processed/          label maps, skeleton, maschere colorate,
 │   │                       class_weights.json, channel_stats.json
 │   ├── splits/             splits.json
@@ -102,13 +101,13 @@ Le sottocategorie restano recuperabili dai JSON originali se in futuro servisse
 una granularità maggiore.
 
 **Due convenzioni di annotazione coesistono.** La verifica eseguita in fase di
-EDA ha mostrato che il dataset non usa un vocabolario unico: 39 file su 92 usano
-etichette italiane, 53 usano etichette inglesi.
+EDA ha mostrato che il dataset non usa un vocabolario unico: 39 file su 100
+usano etichette italiane, 61 usano etichette inglesi.
 
 | Convenzione | File | Vocabolario |
 |---|---|---|
 | Italiana | 39 | `tralcio`, `tralcio_secco`, `cordone`, `curva`, `nodo`, `altro`, `ferro` |
-| Inglese | 53 | `cane`, `cordon`, `node`, `other` |
+| Inglese | 61 | `cane`, `cordon`, `node`, `other` |
 
 Le due convenzioni **non hanno la stessa granularità**: quella inglese non
 distingue il tralcio secco da quello vivo, non separa la curva dal resto del
@@ -128,10 +127,12 @@ comunque nelle cinque classi canoniche, la granularità aggiuntiva delle 39
 immagini italiane **non viene sfruttata** dal modello attuale, mentre la
 precisione dei margini incide direttamente su ogni metrica basata su
 sovrapposizione di area. Sui dati come sono oggi, quindi, la convenzione inglese
-è quella che contribuisce di più. La granularità italiana tornerebbe rilevante
-solo se il problema cambiasse — per esempio distinguendo il tralcio secco da
-quello vivo, distinzione rilevante in potatura — e in quel caso il sottoinsieme
-utilizzabile sarebbe meno della metà del dataset.
+è quella che contribuisce di più — ed è quella con cui sono state annotate le
+immagini aggiunte per portare il dataset a 100, il che porta la sua quota da 53
+file su 92 a 61 su 100. La granularità italiana tornerebbe rilevante solo se il
+problema cambiasse — per esempio distinguendo il tralcio secco da quello vivo,
+distinzione rilevante in potatura — e in quel caso il sottoinsieme utilizzabile
+sarebbe poco più di un terzo del dataset.
 
 *Implicazione sulle metriche.* Una differenza sistematica di precisione dei
 margini fra due sottoinsiemi introduce rumore nell'etichettatura che il modello
@@ -167,7 +168,7 @@ La dilatazione è applicata una classe alla volta e scritta **solo dove la masch
 
 ### Annotazioni scartate
 
-L'esecuzione sull'intero dataset ha segnalato **4 forme scartate** su 93 file,
+L'esecuzione sul dataset definitivo segnala **4 forme scartate** su 100 file,
 tutte di classe `Cane` (`tralcio` e `tralcio_secco`), annotate come `polygon`
 con soli 2 punti:
 
@@ -181,10 +182,18 @@ Un poligono con due vertici non racchiude area e non può essere riempito.
 Si tratta con ogni probabilità di errori di annotazione (strumento poligono
 selezionato al posto di polilinea) oppure di tralci molto piccoli.
 
-*Decisione:* lasciarle scartate. L'incidenza è trascurabile (4 forme su 93
-immagini) e la segnalazione esplicita a schermo rende il fenomeno tracciabile.
-L'alternativa — interpretare i poligoni degeneri delle classi filiformi come
-polilinee — introdurrebbe una regola implicita a fronte di un beneficio minimo.
+*Decisione:* lasciarle scartate. L'incidenza è trascurabile — 4 forme su 100
+immagini, ciascuna con decine di forme annotate — e la segnalazione esplicita a
+schermo rende il fenomeno tracciabile. L'alternativa, interpretare i poligoni
+degeneri delle classi filiformi come polilinee, introdurrebbe una regola
+implicita a fronte di un beneficio minimo.
+
+*Verificato* durante la revisione delle annotazioni: sono le uniche quattro
+forme del dataset che vengono perse, e nessuna forma viene scartata per tipo
+non gestito. Le geometrie a due punti di `ferro` e `bud` non rientrano nel
+conteggio: quelle etichette sono in `LABELS_TO_IGNORE` e non vengono mai
+disegnate, e in LabelMe un `rectangle` o una `line` a due punti sono comunque
+geometrie valide.
 
 ### Correzioni rispetto alla versione iniziale
 
@@ -257,11 +266,11 @@ tubo ha inghiottito l'intera struttura, per cui il clDice cessa di misurare la
 connettività della linea centrale e degenera in una misura di sovrapposizione di
 area — perdendo esattamente la proprietà per cui viene adottato.
 
-**Risultati sulla classe `Cane`** (93 immagini):
+**Risultati sulla classe `Cane`** (100 immagini):
 
 | | kernel 2×2 | kernel 3×3 |
 |---|---|---|
-| copertura media | 34,4 % | 53,0 % |
+| copertura media | 34,8 % | 53,6 % |
 | copertura massima | 56,6 % | **83,7 %** |
 | immagini oltre l'80 % | **0** | 3 |
 
@@ -331,44 +340,45 @@ diverse, gonfiando le metriche di test.
 acquisizioni indipendenti. Lo split casuale è quindi metodologicamente valido e
 non è necessaria una suddivisione per gruppi.
 
-### Esclusione di campioni
-
-Un campione, `blaze-101-25367037-20087`, è stato tolto dal dataset. Il cordone è
-presente e ben visibile nell'immagine, ma **non è annotato**: nel JSON non
-compare alcuna forma `cordone`/`cordon`, e la label map risultava priva di pixel
-di quella classe. Era l'unica immagine su 93 in questa condizione — la seconda
-più povera di cordone ne conta 4 682 pixel, contro una mediana di 11 052.
-
-*Meccanismo adottato.* I quattro file del campione (annotazione più le tre
-modalità grezze) sono stati spostati in `data/excluded/`, che rispecchia la
-struttura di `data/raw/`. La pipeline parte dai JSON presenti in
-`data/raw/annotations/`, quindi il campione sparisce da solo da label map,
-split e dataset aumentato, **senza alcuna modifica al codice**.
-
-*Motivazione della scelta.* Le alternative erano cancellare i file o
-introdurre una lista di esclusione in `config.py`. La cancellazione rende un
-campione mancante indistinguibile da una perdita accidentale; una lista nel
-codice mescola una questione di qualità del dato con la configurazione del
-modello. Lo spostamento conserva i file, rende l'esclusione evidente a chi
-guarda le cartelle e permette di reintegrare il campione spostandolo indietro
-una volta annotato. Il `README.md` in `data/excluded/` elenca i campioni e la
-procedura di recupero.
-
-*Contesto.* Il dataset è destinato a crescere fino a circa 100 immagini con
-annotazioni aggiunte manualmente; in quell'occasione le annotazioni esistenti
-verranno ricontrollate e questo campione potrà rientrare. La partizione cambierà
-comunque a quel punto, quindi ricalcolarla ora non ha costo.
-
 ### Ripartizione effettiva
 
-Su 92 immagini: 64 train (69,6 %), 14 validation (15,2 %), 14 test (15,2 %).
-Impronta della partizione: `7afaa392`.
+Su **100 immagini**: 70 train (70 %), 15 validation (15 %), 15 test (15 %).
+Impronta della partizione: **`62de0ec4`**.
 
-> La partizione precedente, su 93 immagini, era 65/14/14 con impronta
-> `d57f79eb`. Rimuovendo uno stem l'intera partizione viene ridisegnata, non
-> solo il campione tolto: `train_test_split` mescola l'elenco completo, quindi
-> l'assegnazione di tutti gli altri campioni cambia. Metriche prodotte con
-> impronte diverse non sono confrontabili.
+### Come si è arrivati a questo dataset
+
+Il dataset ha attraversato tre stati, e le impronte lo registrano. Vale la pena
+tenerne traccia perché **metriche prodotte con impronte diverse non sono
+confrontabili**, e i risultati precedenti al refactoring appartengono al primo.
+
+| Immagini | Impronta | Ripartizione | Cosa era successo |
+|---|---|---|---|
+| 93 | `d57f79eb` | 65/14/14 | stato iniziale |
+| 92 | `7afaa392` | 64/14/14 | escluso un campione con annotazione incompleta |
+| **100** | **`62de0ec4`** | **70/15/15** | campione riannotato e reintegrato, più otto immagini nuove |
+
+**Il campione escluso.** `blaze-101-25367037-20087` mostrava un cordone ben
+visibile ma **non annotato**: nel JSON non compariva alcuna forma
+`cordone`/`cordon`, e la label map risultava priva di pixel di quella classe.
+Era l'unica immagine su 93 in questa condizione. È stato tenuto fuori dal
+dataset finché l'annotazione non è stata completata; ora contiene 7 543 pixel
+di cordone ed è rientrato.
+
+*Meccanismo usato per l'esclusione.* I quattro file del campione furono spostati
+in una cartella separata che rispecchiava la struttura di `data/raw/`, invece di
+essere cancellati o filtrati da una lista nel codice. La pipeline parte dai JSON
+presenti in `data/raw/annotations/`, quindi un campione spostato fuori sparisce
+da solo da label map, split e dataset aumentato, **senza alcuna modifica al
+codice** — e reintegrarlo è stato altrettanto semplice. La cartella è stata
+rimossa una volta completata la riannotazione, non essendoci più campioni
+esclusi.
+
+> **Perché ogni cambiamento del dataset ridisegna l'intera partizione.**
+> `train_test_split` mescola l'elenco completo degli stem: aggiungendone o
+> togliendone anche uno solo, l'assegnazione di *tutti* gli altri cambia. Non
+> esiste una partizione "quasi uguale" alla precedente, ed è la ragione per cui
+> il dataset è stato portato alla sua forma definitiva **prima** di eseguire
+> qualunque esperimento.
 
 ---
 
@@ -447,7 +457,7 @@ del notebook 02, ha mostrato due lotti di acquisizione con formati diversi:
 
 I 24 file a tre canali contengono **tre piani identici**: un'immagine in scala
 di grigi salvata come RGB, verificata su tutti e 24 e per entrambe le modalità.
-`depth` è invece genuinamente a tre canali su tutti i file (0 su 93 con piani
+`depth` è invece genuinamente a tre canali su tutti i file (0 con piani
 identici), quindi `MODALITY_CHANNELS['depth'] = 3` era ed è corretto.
 
 *Perché l'errore era sfuggito.* La funzione originale accumulava i formati in un
@@ -580,46 +590,49 @@ rendeva il risultato dipendente da un numero inventato.
 
 ### Distribuzione misurata
 
-Su 92 immagini, partizione `7afaa392`. Quota di pixel per classe:
+Su 100 immagini, partizione `62de0ec4`. Quota di pixel per classe:
 
 | Classe | train | val | test | totale |
 |---|---|---|---|---|
-| Background | 83,55 % | 83,37 % | 85,35 % | 83,80 % |
-| Cane | 11,61 % | 11,66 % | 9,75 % | 11,33 % |
-| Cordon | 3,58 % | 3,61 % | 3,67 % | 3,60 % |
-| Node | 0,26 % | 0,37 % | 0,24 % | 0,27 % |
-| Other | 1,01 % | 0,98 % | 0,99 % | 1,00 % |
+| Background | 83,55 % | 86,89 % | 83,55 % | 84,05 % |
+| Cane | 11,57 % | 8,33 % | 11,50 % | 11,07 % |
+| Cordon | 3,55 % | 3,74 % | 3,64 % | 3,59 % |
+| Node | 0,27 % | 0,22 % | 0,34 % | 0,27 % |
+| Other | 1,06 % | 0,83 % | 0,97 % | 1,01 % |
 
 Numero di immagini in cui ciascuna classe compare:
 
 | Classe | train | val | test | totale |
 |---|---|---|---|---|
-| Background | 64/64 | 14/14 | 14/14 | 92/92 |
-| Cane | 64/64 | 14/14 | 14/14 | 92/92 |
-| Cordon | 64/64 | 14/14 | 14/14 | 92/92 |
-| Node | 45/64 | 12/14 | 11/14 | 68/92 |
-| Other | 62/64 | 13/14 | 12/14 | 87/92 |
+| Background | 70/70 | 15/15 | 15/15 | 100/100 |
+| Cane | 70/70 | 15/15 | 15/15 | 100/100 |
+| Cordon | 70/70 | 15/15 | 15/15 | 100/100 |
+| Node | 52/70 | 12/15 | 12/15 | 76/100 |
+| Other | 67/70 | 14/15 | 14/15 | 95/100 |
 
-**Lo sbilanciamento è forte ma non estremo.** Background è circa 310 volte più
-frequente di `Node`. Con `sqrt_inverse` questo si traduce in un peso di circa
-17,6 volte quello dello sfondo — elevato ma trattabile, ed è esattamente la
-ragione per cui quel metodo è preferito a `inverse`, che produrrebbe un fattore
-310 e renderebbe l'addestramento instabile sulle classi rare.
+**Lo sbilanciamento è forte ma non estremo.** Background è circa 313 volte più
+frequente di `Node`. Con `sqrt_inverse` questo si traduce in un peso di 17,7
+volte quello dello sfondo — elevato ma trattabile, ed è esattamente la ragione
+per cui quel metodo è preferito a `inverse`, che produrrebbe un fattore 313 e
+renderebbe l'addestramento instabile sulle classi rare.
 
-**`Node` non è solo raro, è spesso assente.** Compare in 68 immagini su 92: manca
-del tutto da un quarto del dataset. È un'informazione che la sola quota di pixel
-nascondeva, e ha due conseguenze — le metriche calcolate per immagine su `Node`
-sono indefinite in 24 casi, e la varianza del suo IoU sarà alta. È il dato che
-motiva la valutazione riportata più sotto.
+**`Node` non è solo raro, è spesso assente.** Compare in 76 immagini su 100:
+manca del tutto da un quarto del dataset. È un'informazione che la sola quota di
+pixel nascondeva, e ha due conseguenze — le metriche calcolate per immagine su
+`Node` sono indefinite in 24 casi, e la varianza del suo IoU sarà alta. È il
+dato che motiva la valutazione riportata più sotto.
 
-**Il controllo di presenza passa.** Ogni classe compare in ogni partizione, quindi
-la mean IoU resta ben definita ovunque. Il margine più stretto è `Node` nel test,
-presente in 11 immagini su 14.
+**Il controllo di presenza passa.** Ogni classe compare in ogni partizione,
+quindi la mean IoU resta ben definita ovunque. Il margine più stretto è `Node`,
+presente in 12 immagini su 15 sia in validation sia in test.
 
-**Le partizioni sono comparabili.** Lo scostamento maggiore è su `Cane`, 9,75 %
-nel test contro 11,61 % nel train. Su 14 immagini è entro la variabilità attesa e
-non giustifica una suddivisione stratificata; resta un valore da riguardare se il
-test dovesse comportarsi in modo anomalo.
+**Le partizioni sono comparabili, con un'avvertenza.** Lo scostamento maggiore è
+su `Cane`: 8,33 % in validation contro 11,57 % nel train, cioè circa un quarto
+in meno. Su 15 immagini rientra nella variabilità attesa — la numerosità
+efficace è il numero di immagini, non di pixel — ma è uno scarto da tenere
+presente, perché la validation è ciò su cui si decidono checkpoint ed early
+stopping. Se il comportamento in validation risultasse anomalo rispetto al test,
+è il primo posto dove guardare.
 
 ### Statistiche di canale
 
@@ -640,15 +653,15 @@ ordine **BGR**. I suffissi in `config` sono stati corretti di conseguenza
 documentazione falsa, e avrebbe invitato ad aggiungere una conversione di
 colore che avrebbe applicato a ogni canale le statistiche di un altro.
 
-**Valori misurati sul training set** (92 immagini, partizione `7afaa392`):
+**Valori misurati sul training set** (70 immagini, partizione `62de0ec4`):
 
 | Canale | Media | Dev. std |
 |---|---|---|
-| intensity | 82,61 | 28,10 |
-| depth_B | 84,04 | 118,65 |
-| depth_G | 62,68 | 95,19 |
-| depth_R | 33,97 | 76,95 |
-| confidence | 10,83 | 19,57 |
+| intensity | 82,27 | 27,76 |
+| depth_B | 83,87 | 118,71 |
+| depth_G | 62,07 | 94,87 |
+| depth_R | 34,43 | 77,72 |
+| confidence | 10,46 | 18,86 |
 
 ### Pesi delle classi
 
@@ -658,16 +671,23 @@ normalizzazione al minimo:
 | Classe | Quota pixel (train) | Peso |
 |---|---|---|
 | Background | 83,55 % | 1,00 |
-| Cane | 11,61 % | 2,68 |
-| Cordon | 3,58 % | 4,83 |
-| Node | 0,26 % | 18,08 |
-| Other | 1,01 % | 9,11 |
+| Cane | 11,57 % | 2,69 |
+| Cordon | 3,55 % | 4,85 |
+| Node | 0,27 % | 17,69 |
+| Other | 1,06 % | 8,88 |
 
-Il rapporto fra la classe più pesante e la più leggera è **18,1×**. Con
-`inverse` sarebbe **327×**: un fattore di quell'ordine rende l'addestramento
+Il rapporto fra la classe più pesante e la più leggera è **17,7×**. Con
+`inverse` sarebbe **313×**: un fattore di quell'ordine rende l'addestramento
 instabile sulle classi rare, perché ogni pixel di `Node` sbagliato pesa quanto
-327 pixel di sfondo e il gradiente viene dominato da poche decine di pixel per
+313 pixel di sfondo e il gradiente viene dominato da poche decine di pixel per
 immagine. È la ragione per cui `sqrt_inverse` resta il metodo predefinito.
+
+*Riferimento nel dominio.* Majeed et al. usano `median_freq` non normalizzato su
+un dataset ancora più sbilanciato — 0,3 % di filo di ferro contro il nostro
+0,27 % di `Node` — ottenendo un rapporto di circa 307× e un'accuratezza di 0,97
+proprio sulla classe più sottile. Il fattore aggressivo è quindi praticabile in
+questo dominio, e `inverse` merita di essere provato come seconda
+configurazione invece di essere scartato a priori.
 
 **`median_freq` non è un metodo distinto quando la normalizzazione è attiva.**
 Normalizzando si divide ogni peso per il minimo, e il fattore mediana — che è
@@ -701,11 +721,11 @@ comunque utile:
 
 | Classe | Pixel senza profondità valida |
 |---|---|
-| Background | 67,9 % |
-| Cane | 12,8 % |
-| Cordon | 1,8 % |
-| Node | 0,6 % |
-| Other | 12,7 % |
+| Background | 68,3 % |
+| Cane | 11,3 % |
+| Cordon | 2,1 % |
+| Node | 0,8 % |
+| Other | 10,8 % |
 
 Il ToF misura quasi ovunque ci siano le strutture da segmentare e tace dove c'è
 sfondo: la presenza stessa di una profondità valida è un indizio di foreground.
@@ -729,14 +749,14 @@ Il confronto fra kernel 2 e kernel 3 documentato nella sezione 2 era stato
 eseguito una volta in modo estemporaneo. È ora una funzione del modulo, che
 ricostruisce gli scheletri **in memoria** per ciascun kernel tramite
 `build_skeleton_map()`: i file scritti dal notebook 01 non vengono né letti né
-sovrascritti. Eseguita sulle 92 immagini riproduce i valori già documentati.
+sovrascritti. Eseguita sulle 100 immagini del dataset definitivo.
 
 | | kernel 2×2 | kernel 3×3 |
 |---|---|---|
-| copertura media `Cane` | 34,4 % | 53,0 % |
+| copertura media `Cane` | 34,8 % | 53,6 % |
 | copertura massima `Cane` | 56,6 % | **83,7 %** |
 | immagini `Cane` oltre l'80 % | **0** | 3 |
-| copertura media `Cordon` | 13,0 % | 19,9 % |
+| copertura media `Cordon` | 13,2 % | 20,2 % |
 | copertura massima `Cordon` | 33,2 % | 50,2 % |
 
 Il `Cordon` non si avvicina alla soglia con nessuno dei due kernel: è una
@@ -753,7 +773,7 @@ comporti sulle altre.
 > viene estratto dalla maschera binaria unificata e le occlusioni sono rimosse
 > dopo (sezione 2), mentre il denominatore resta il cordone *visibile*.
 > Scheletrizzando direttamente il cordone visibile si ottiene il 19,0 % invece
-> del 13,0 %: sono due grandezze diverse, e i valori qui riportati sono quelli
+> del 13,2 %: sono due grandezze diverse, e i valori qui riportati sono quelli
 > prodotti da `exploration.compute_skeleton_coverage()`, cioè quelli relativi
 > agli scheletri effettivamente scritti su disco.
 
@@ -780,19 +800,19 @@ notebook: richiede la classe `Dataset` e la pipeline `albumentations`, che non
 quarto delle immagini. Si è quindi valutata l'ipotesi di eliminarla.
 
 **L'ipotesi iniziale era di assorbirla in `Cordon`**, sul presupposto che i nodi
-si trovino sul cordone. Le misure non la sostengono (dati su 93 immagini, prima
-dell'esclusione del campione della sezione 3):
+si trovino sul cordone. Le misure non la sostengono:
 
 | Misura | Valore |
 |---|---|
-| Pixel di `Node` interni alla maschera del cordone | 54,6 % |
-| Bordo dei pixel di `Node` su `Cordon` | 38,4 % |
-| Bordo dei pixel di `Node` su `Cane` | 32,1 % |
-| Bordo dei pixel di `Node` su `Background` | 28,9 % |
+| Pixel di `Node` interni alla maschera del cordone | 54,0 % |
+| Bordo dei pixel di `Node` su `Cordon` | 38,7 % |
+| Bordo dei pixel di `Node` su `Cane` | 32,0 % |
+| Bordo dei pixel di `Node` su `Background` | 28,7 % |
 
 Quasi metà dei nodi **non** si trova sul cordone, coerentemente con il fatto che
-un nodo è tale su qualsiasi germoglio. Il caso limite lo conferma: il campione
-escluso in sezione 3 conteneva due nodi annotati e nessun cordone. Una fusione
+un nodo è tale su qualsiasi germoglio. Il caso limite lo confermava: il campione
+descritto in sezione 3 conteneva due nodi annotati e, prima della
+riannotazione, nessun cordone. Una fusione
 uniforme verso `Cordon` etichetterebbe come cordone circa il 45 % di pixel che
 stanno sui tralci, corrompendo entrambe le classi.
 
@@ -804,7 +824,7 @@ pixel invece che una regola uniforme sbagliata in metà dei casi, e costa una
 riga di configurazione.
 
 *Da verificare prima di adottarlo:* quanti pixel di `Node` finirebbero su
-`Background`. Il 28,9 % di bordo su sfondo suggerisce che una parte dei poligoni
+`Background`. Il 28,7 % di bordo su sfondo suggerisce che una parte dei poligoni
 deborda oltre le strutture annotate.
 
 ---
@@ -1024,16 +1044,16 @@ vicenda. Nel vigneto il tralcio passa **davanti** al cordone: l'unione dei due
 cordone, e la successiva moltiplicazione per la label map assegna quei pixel a
 `Cane`, che ha priorità. Lo scheletro del cordone si spezza a ogni incrocio.
 
-*Verifica* sulle 92 immagini, applicando il loro algoritmo alla lettera:
+*Verifica* sulle 100 immagini, applicando il loro algoritmo alla lettera:
 
 | | per classe (nostro) | unione poi divisione |
 |---|---|---|
-| pixel di scheletro del cordone | 1 358 | 1 664 |
-| **componenti connesse** | **9,32** | **14,36** |
-| immagini con più frammenti | — | **86 / 92** |
+| pixel di scheletro del cordone | 1 373 | 1 676 |
+| **componenti connesse** | **9,13** | **13,97** |
+| immagini con più frammenti | — | **93 / 100** |
 
-L'unione produce più pixel ma il 54 % di frammenti in più, e peggiora in 86
-immagini su 92.
+L'unione produce più pixel ma il 53 % di frammenti in più, e peggiora in 93
+immagini su 100.
 
 **Kernel di dilatazione quadrato 2×2 invece del diamante di raggio 2.**
 L'articolo dilata con un diamante di raggio 2, cioè 13 pixel.
@@ -1045,9 +1065,9 @@ problema è la **copertura**:
 
 | Kernel | Pixel | Copertura media di `Cane` | Massima | Immagini oltre l'80 % |
 |---|---|---|---|---|
-| quadrato 2×2 | 4 | 34,4 % | 56,6 % | 0 / 92 |
-| quadrato 3×3 | 9 | 53,0 % | 83,7 % | 3 / 92 |
-| diamante r2 | 13 | 65,7 % | 92,8 % | 7 / 92 |
+| quadrato 2×2 | 4 | 34,8 % | 56,6 % | 0 / 100 |
+| quadrato 3×3 | 9 | 53,6 % | 83,7 % | 3 / 100 |
+| diamante r2 | 13 | 65,7 % | 92,8 % | 7 / 100 |
 
 Col diamante il tubo occupa due terzi del tralcio: smette di essere una linea
 centrale e diventa la maschera, e la SRL degenera in un normale termine di
@@ -1293,8 +1313,8 @@ Tre ragioni, in ordine di peso:
    sola run di controllo a capacità ridotta 4 969 ms su quattro run. Il
    pareggio verso il basso è la strada metodologicamente pulita **e** la più
    economica.
-3. **È più adatto ai dati.** Il training set conta 256 campioni aumentati da 64
-   immagini originali. Trentuno milioni di parametri su 256 campioni sono
+3. **È più adatto ai dati.** Il training set conta 280 campioni aumentati da 70
+   immagini originali. Trentuno milioni di parametri su 280 campioni sono
    molti, e il rischio di overfitting è concreto a prescindere dal confronto.
 
 *Conseguenza da dichiarare.* I risultati di SegNet non saranno confrontabili
@@ -1312,7 +1332,7 @@ due domande diverse:
 | Configurazione migliore | architettura vincente, larghezza scelta per resa | qual è il massimo ottenibile |
 
 Il secondo costa una run aggiuntiva e non è scontato che la larghezza maggiore
-vinca: su 256 campioni di training un modello da 31 milioni di parametri ha un
+vinca: su 280 campioni di training un modello da 31 milioni di parametri ha un
 rischio di overfitting concreto.
 
 *Nota sui risultati del notebook monolitico.* I valori ottenuti prima del
@@ -1334,7 +1354,7 @@ batch di dimensione 1**. Il livello 1×1 della piramide riduce la mappa a un sol
 pixel, e la batch normalization non può calcolare statistiche da un unico valore
 per canale.
 
-Con 256 campioni e batch 4 il resto è zero, quindi il caso non si presenta oggi;
+Con 280 campioni e batch 4 il resto è zero, quindi il caso non si presenta oggi;
 si presenterebbe cambiando la dimensione del batch o del dataset — cioè proprio
 quando il dataset verrà ampliato a ~100 immagini. Il dataloader di training ora
 scarta l'ultimo batch **solo quando conterrebbe esattamente un campione**, così
@@ -1495,6 +1515,10 @@ riesecuzione di **ogni misura citata in queste note**, e verifica funzionale su
 dati reali. Da qui in avanti una modifica al codice invalida le run già
 eseguite, quindi il controllo è stato fatto prima e non dopo.
 
+Il controllo è stato ripetuto integralmente sul **dataset definitivo a 100
+immagini**, dopo la revisione delle annotazioni: tutti i valori riportati in
+queste note provengono da quella esecuzione.
+
 ### Difetti trovati e corretti
 
 **Direzione dello scheduler opposta alla metrica monitorata — critico.**
@@ -1537,7 +1561,7 @@ ridondanti al registro.
 |---|---|
 | Numeri delle note | tutte le misure di queste note riprodotte dai dati attuali |
 | Leakage | nessuno stem condiviso fra partizioni; nessuna copia aumentata in validation o test; nessuna immagine originale a cavallo di due partizioni |
-| Provenienza | `class_weights.json` e `channel_stats.json` portano l'impronta `7afaa392`, metodo e nomi delle classi coerenti con la configurazione |
+| Provenienza | `class_weights.json` e `channel_stats.json` portano l'impronta `62de0ec4`, metodo e nomi delle classi coerenti con la configurazione |
 | Normalizzazione | ciascuno dei cinque canali confrontato con il calcolo manuale delle proprie statistiche |
 | Skeleton loss | il gradiente cambia quando il termine è attivo, verificato nel ciclo reale e non solo isolatamente |
 | Riproducibilità | stesso seed, stesso risultato; seed diverso, risultato diverso; validation sempre nello stesso ordine |
@@ -1566,7 +1590,8 @@ non coincidono.
 | 3 | Formato dei file di intensità | **Due lotti con formati diversi**; riconciliati in lettura da `read_modality_image()` — sezione 4 |
 | 4 | Pesi delle classi: calcolo in EDA, salvataggio, ricarica nel training | Fatto: notebook 02 li scrive, `config.load_class_weights()` li rilegge con verifica dell'impronta |
 | 6 | Adattamento della classe `Dataset` all'intensità a canale singolo | Chiuso a monte: il dato che arriva alla classe è già conforme a `MODALITY_CHANNELS` |
-| 5 | Definizione delle colonne di `experiments.csv` | Definite: 72 colonne, elenco in sezione 9 |
+| 5 | Definizione delle colonne di `experiments.csv` | Definite: 66 colonne, elenco in sezione 9 |
+| 8 | Riannotazione e revisione delle annotazioni | Fatte: dataset portato a 100 immagini, campione reintegrato, revisione documentata in sezione 1 |
 | 9 | Formule di Skeleton Recall Loss e clDice | Verificate sui PDF in `reference/` — sezione 7.1 |
 | 10 | Critica alla Skeleton Recall Loss | Letta e analizzata: l'obiezione sul gradiente costante non regge sui logit, ma l'asimmetria recall/precisione sì — sezione 7.4 |
 
@@ -1578,8 +1603,7 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 
 | # | Questione | Quando |
 |---|---|---|
-| 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Dopo l'ampliamento del dataset |
-| 8 | Riannotazione del campione escluso e revisione delle annotazioni esistenti | All'ampliamento del dataset a ~100 immagini |
+| 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Solo se i risultati la giustificassero |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
 | 13 | Criterio di ordinamento della tabella comparativa e scelta di `MONITOR_METRIC` — sezione 7.5 | Prima degli esperimenti definitivi |
