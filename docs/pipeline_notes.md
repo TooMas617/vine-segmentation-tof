@@ -1198,8 +1198,27 @@ escluse dalla media invece di essere contate come recall nullo.
 **Scala della combinazione.** L'articolo somma `CE + Dice` con coefficiente 1
 ciascuno, scala circa 2; la `CombinedLoss` del progetto usa `0,7·CE + 0,3·Dice`,
 combinazione convessa di scala circa 1. Un peso `w` preso dall'articolo va
-quindi **dimezzato**: `w = 0,2` qui equivale a circa `0,4` là, fra i due valori
-che gli autori hanno testato.
+quindi **dimezzato** per avere lo stesso effetto relativo:
+
+| peso nell'articolo | equivalente qui |
+|---|---|
+| 0,1 (testato dagli autori) | 0,05 |
+| 1,0 (testato dagli autori) | **0,5** |
+
+**Valore adottato: `weight = 0,5`.** Il valore precedente, 0,2, corrispondeva a
+circa 0,4 nell'articolo: un punto intermedio che non coincide con nessuna delle
+due configurazioni pubblicate e che sarebbe stato difendibile solo come
+taratura propria.
+
+La scelta del più forte dei due non è un giudizio su quale funzioni meglio, ma
+discende dallo scopo dell'ablazione, che è **falsificare la previsione della
+sezione 7.6** e non cercare il valore ottimale. A 0,05 un risultato nullo
+sarebbe ambiguo — indistinguibile fra «l'effetto previsto non c'è» e «il
+termine era applicato troppo debolmente» — mentre a 0,5 un risultato nullo è
+esso stesso un'informazione, perché varrebbe alla forza che gli autori hanno
+pubblicato. Cercare il valore ottimale richiederebbe inoltre una serie di run
+di taratura che il tempo disponibile non consente, e che comunque risponderebbe
+a una domanda diversa da quella posta qui.
 
 ### 7.4 Cosa fa davvero la Skeleton Recall Loss
 
@@ -1731,6 +1750,7 @@ non coincidono.
 | 8 | Riannotazione e revisione delle annotazioni | Fatte: dataset portato a 100 immagini, campione reintegrato, revisione documentata in sezione 1 |
 | 9 | Formule di Skeleton Recall Loss e clDice | Verificate sui PDF in `reference/` — sezione 7.1 |
 | 10 | Critica alla Skeleton Recall Loss | Letta e analizzata: l'obiezione sul gradiente costante non regge sui logit, ma l'asimmetria recall/precisione sì — sezione 7.4 |
+| 11 | Peso della Skeleton Recall Loss | Fissato a **0,5**, cioè l'1,0 dell'articolo corretto per la diversa scala della loss principale — sezione 7.3 |
 
 La questione 3 era stata dichiarata risolta con una conclusione **errata**: la
 verifica originale ispezionava un campione casuale e ne riportava un formato

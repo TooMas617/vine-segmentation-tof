@@ -658,7 +658,18 @@ SKELETON_LOSS_CONFIG: Dict[str, Any] = {
     "enabled": False,       # Whether to add the skeleton recall loss
     "load_skeleton": True,  # Skeletons are always loaded for clDice and plots
     # total_loss = main_loss + weight * skeleton_loss
-    "weight": 0.2,
+    #
+    # 0.5 here is the 1.0 of the reference paper, corrected for scale. The paper
+    # sums CE + Dice at coefficient 1 each, so its main loss is of scale ~2,
+    # while CombinedLoss is a convex combination of scale ~1: a weight taken
+    # from the paper has to be halved to have the same relative effect. The two
+    # values the authors tested, 0.1 and 1.0, therefore map to 0.05 and 0.5.
+    #
+    # The stronger one is chosen because the ablation is a falsification test,
+    # not a search for the best value. At 0.05 a null result could not be told
+    # apart from the term barely being applied; at 0.5 a null result is itself
+    # a finding, since it holds at the published strength.
+    "weight": 0.5,
     "dilation_kernel_size": 2,
     "skeleton_classes": [CLASS_NAMES.index("Cane"), CLASS_NAMES.index("Cordon")],
 }
