@@ -1560,6 +1560,32 @@ calcolato: 256 predizioni a 512×512 in memoria sono mezzo gigabyte.
 per la ragione della sezione 7.6: un termine che premia il recall senza
 penalizzare i falsi positivi li fa divergere, e la sola IoU lo nasconderebbe.
 
+**Budget fisso di 70 epoche, non convergenza.** Nella prima run definitiva
+(`UNet`, `ce`, seed 42) la mean IoU di validazione era ancora in lieve salita
+all'epoca 70 e l'early stopping con `patience = 20` non è mai scattato. Si è
+comunque scelto di **non allungare il budget**, per tre ragioni misurate sulla
+run stessa:
+
+- la **val loss ha smesso di scendere intorno all'epoca 50** (0,199) e da lì
+  oscilla fra 0,20 e 0,22, mentre la train loss continua a calare da 0,194 a
+  0,146: il divario di generalizzazione si sta aprendo, quindi la salita
+  residua della IoU è raccolta di briciole in regime di sovradattamento
+- il guadagno è in decelerazione: +0,04 di IoU in ventisette epoche, fra la 42
+  e la 69
+- con 23 immagini di validazione, oscillazioni di ±0,02 fra epoche consecutive
+  sono nell'ordine del rumore
+
+Il confronto è quindi **a budget pareggiato**: tutte le architetture ricevono
+70 epoche, e questo va dichiarato come tale invece di essere presentato come
+convergenza.
+
+*Il rischio del budget pareggiato, e come viene controllato.* Un budget fisso
+penalizza un'architettura che converga più lentamente, confondendo lentezza e
+qualità. Il controllo non è a occhio: si confronta la **pendenza della mean IoU
+di validazione sulle ultime dieci epoche** fra le tre architetture, dato già
+presente in `history.json`. Se sono comparabili il budget è equo; se una è
+ancora chiaramente in salita, si alza il budget per quella e lo si dichiara.
+
 **La direzione dello scheduler è derivata, non dichiarata.** `ReduceLROnPlateau`
 viene avanzato con `MONITOR_METRIC`, quindi la sua direzione **deve** essere
 `MONITOR_MODE`; `create_scheduler()` la legge da lì e `SCHEDULER_CONFIG` non ne
