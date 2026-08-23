@@ -1581,10 +1581,55 @@ convergenza.
 
 *Il rischio del budget pareggiato, e come viene controllato.* Un budget fisso
 penalizza un'architettura che converga più lentamente, confondendo lentezza e
-qualità. Il controllo non è a occhio: si confronta la **pendenza della mean IoU
-di validazione sulle ultime dieci epoche** fra le tre architetture, dato già
-presente in `history.json`. Se sono comparabili il budget è equo; se una è
-ancora chiaramente in salita, si alza il budget per quella e lo si dichiara.
+qualità. Il controllo è la **pendenza della mean IoU di validazione sulle
+ultime dieci epoche**, dato già presente in `history.json` — ma va letto
+contro l'inviluppo misurato sotto, non in assoluto.
+
+### Rumore fra run identiche — misurato
+
+Tre run identiche in tutto tranne `RANDOM_SEED` (42, 123, 456), su
+`UNet` + `ce` + AdamW + ReduceLROnPlateau, 5 canali, budget 70 epoche. Lo split
+è letto da disco, quindi il seed tocca solo inizializzazione dei pesi e ordine
+dell'augmentation: la partizione resta `62de0ec4` in tutte e tre.
+
+Tutta la variazione fra queste run è rumore per costruzione. È il metro con cui
+va letta ogni differenza riportata altrove.
+
+| grandezza | media | dev. std | soglia 2σ fra due run singole |
+|---|---|---|---|
+| test IoU (no bg) | 0,6441 | 0,0084 | **0,024** |
+| best val IoU | 0,6425 | 0,0091 | 0,026 |
+| test clDice medio | 0,8999 | 0,0030 | **0,008** |
+| precisione (val, epoca migliore) | 0,7827 | 0,0114 | **0,032** |
+| recall (val, epoca migliore) | 0,8510 | 0,0035 | 0,010 |
+| clDice `Cane` | 0,9142 | 0,0036 | 0,010 |
+| clDice `Cordon` | 0,8857 | 0,0044 | 0,012 |
+
+Tre conseguenze, tutte operative.
+
+**La griglia a seed singolo è uno strumento di screening, non di certificazione.**
+Due configurazioni che differiscono di meno di ~0,024 di test IoU sono
+indistinguibili, e vanno riportate come tali. Con differenze fra architetture
+plausibilmente in quell'ordine, è un esito da mettere in conto fin d'ora.
+
+**clDice è tre volte più stabile della IoU** (0,0030 contro 0,0084) e risolve
+quindi differenze molto più piccole. Non sostituisce la IoU — per la sezione
+7.5 è cieco al gonfiamento del raggio — ma è lo strumento più fine sulla
+topologia, e le due vanno lette insieme.
+
+**La precisione è tre volte più rumorosa del recall** (0,0114 contro 0,0035).
+Questo colpisce direttamente l'ablazione della sezione 7.6, la cui previsione è
+un *calo di precisione*: perché sia leggibile a seed singolo dovrebbe superare
+0,032, che è molto. L'ablazione va quindi eseguita **a tre seed per braccio**,
+altrimenti l'esito più probabile è un risultato non concludente — che verrebbe
+scambiato per assenza di effetto.
+
+*Correzione al criterio sulle epoche.* La pendenza di fine training varia essa
+stessa col seed, e non poco: +3,16, +0,44 e +1,44 ×10⁻³ per epoca sulle tre
+run, un fattore sette a parità di architettura. Il criterio enunciato sopra
+non è quindi utilizzabile in assoluto, come era stato formulato inizialmente.
+L'inviluppo `UNet` è **da +0,4 a +3,2 ×10⁻³**: solo una pendenza fuori da
+questo intervallo indica un'architettura realmente troncata a metà salita.
 
 **La direzione dello scheduler è derivata, non dichiarata.** `ReduceLROnPlateau`
 viene avanzato con `MONITOR_METRIC`, quindi la sua direzione **deve** essere
