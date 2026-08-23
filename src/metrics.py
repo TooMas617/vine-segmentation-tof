@@ -60,7 +60,7 @@ class ConfusionMatrix:
 
     def __init__(
         self,
-        num_classes: int = config.NUM_CLASSES,
+        num_classes: Optional[int] = None,
         class_names: Optional[Sequence[str]] = None,
         device: Optional[torch.device] = None,
     ) -> None:
@@ -73,6 +73,9 @@ class ConfusionMatrix:
             device: Device the matrix lives on. Keeping it beside the
                 predictions avoids a host transfer per batch.
         """
+        if num_classes is None:
+            num_classes = config.NUM_CLASSES
+
         self.num_classes = num_classes
         self.class_names = list(config.CLASS_NAMES if class_names is None else class_names)
 
@@ -448,9 +451,9 @@ class MetricsTracker:
 
     def get_best_epoch(
         self,
-        metric: str = config.MONITOR_METRIC,
+        metric: Optional[str] = None,
         phase: str = "val",
-        mode: str = config.MONITOR_MODE,
+        mode: Optional[str] = None,
     ) -> Tuple[Optional[int], Optional[float]]:
         """Find the best epoch recorded so far.
 
@@ -463,6 +466,11 @@ class MetricsTracker:
             Tuple of the epoch number, counted from 1, and its value. Both None
             if nothing has been recorded.
         """
+        if metric is None:
+            metric = config.MONITOR_METRIC
+        if mode is None:
+            mode = config.MONITOR_MODE
+
         values = self._monitored_values(metric, phase)
 
         if not values:
@@ -474,11 +482,11 @@ class MetricsTracker:
 
     def check_early_stopping(
         self,
-        patience: int = config.EARLY_STOPPING_CONFIG["patience"],
-        metric: str = config.MONITOR_METRIC,
+        patience: Optional[int] = None,
+        metric: Optional[str] = None,
         phase: str = "val",
-        mode: str = config.MONITOR_MODE,
-        min_delta: float = config.EARLY_STOPPING_CONFIG["min_delta"],
+        mode: Optional[str] = None,
+        min_delta: Optional[float] = None,
     ) -> bool:
         """Tell whether training should stop.
 
@@ -495,6 +503,15 @@ class MetricsTracker:
         Returns:
             True when the criterion is met.
         """
+        if patience is None:
+            patience = config.EARLY_STOPPING_CONFIG["patience"]
+        if metric is None:
+            metric = config.MONITOR_METRIC
+        if mode is None:
+            mode = config.MONITOR_MODE
+        if min_delta is None:
+            min_delta = config.EARLY_STOPPING_CONFIG["min_delta"]
+
         values = self._monitored_values(metric, phase)
 
         if len(values) <= patience:

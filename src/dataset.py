@@ -440,7 +440,7 @@ def to_tensors(
 
 
 def build_transforms(
-    img_size: Tuple[int, int] = config.IMG_SIZE,
+    img_size: Optional[Tuple[int, int]] = None,
     normaliser: Optional[MultiChannelNormalise] = None,
     splits_hash: Optional[str] = None,
 ) -> Dict[str, MultiModalTransform]:
@@ -473,6 +473,9 @@ def build_transforms(
     Raises:
         ImportError: If albumentations is not installed.
     """
+    if img_size is None:
+        img_size = config.IMG_SIZE
+
     albumentations = _require_albumentations()
 
     if normaliser is None:
@@ -683,7 +686,7 @@ class VineSegmentationDataset(Dataset):
 
 def create_dataloaders(
     transforms: Optional[Dict[str, MultiModalTransform]] = None,
-    batch_size: int = config.BATCH_SIZE,
+    batch_size: Optional[int] = None,
     num_workers: Optional[int] = None,
     load_skeleton: Optional[bool] = None,
     verbose: bool = True,
@@ -715,6 +718,9 @@ def create_dataloaders(
     Returns:
         Mapping from split name to its DataLoader.
     """
+    if batch_size is None:
+        batch_size = config.BATCH_SIZE
+
     if num_workers is None:
         num_workers = min(config.NUM_WORKERS, os.cpu_count() or 1)
 

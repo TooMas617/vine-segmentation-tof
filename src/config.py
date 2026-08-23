@@ -836,7 +836,7 @@ def build_config(run_id: str) -> Dict[str, Any]:
 # =====================================================
 
 
-def set_seed(seed: int = RANDOM_SEED) -> None:
+def set_seed(seed: Optional[int] = None) -> None:
     """Seed every random number generator used in the project.
 
     Args:
@@ -847,6 +847,9 @@ def set_seed(seed: int = RANDOM_SEED) -> None:
         reproducible only up to small GPU non-determinism. Never change the
         seed between runs you intend to compare.
     """
+    if seed is None:
+        seed = RANDOM_SEED
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

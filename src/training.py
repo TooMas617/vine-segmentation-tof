@@ -452,11 +452,11 @@ def train_model(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     skeleton_criterion: Optional[nn.Module] = None,
     run_id: Optional[str] = None,
-    num_epochs: int = config.NUM_EPOCHS,
+    num_epochs: Optional[int] = None,
     device: Optional[torch.device] = None,
     track_cldice: bool = True,
     resume_from: Optional[Path] = None,
-    checkpoint_interval: int = config.CHECKPOINT_INTERVAL,
+    checkpoint_interval: Optional[int] = None,
     verbose: bool = True,
 ) -> Tuple[MetricsTracker, Path]:
     """Train a model, keeping the best checkpoint by the monitored metric.
@@ -501,6 +501,11 @@ def train_model(
     Returns:
         Tuple of the history and the path of the best checkpoint.
     """
+    if num_epochs is None:
+        num_epochs = config.NUM_EPOCHS
+    if checkpoint_interval is None:
+        checkpoint_interval = config.CHECKPOINT_INTERVAL
+
     if device is None:
         device = config.DEVICE
     if optimizer is None:

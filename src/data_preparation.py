@@ -314,7 +314,7 @@ def labelme_shapes_to_mask(
     label_to_index: Dict[str, int],
     priority_order: Optional[Sequence[str]] = None,
     thin_line_indices: Optional[Set[int]] = None,
-    dilation_kernel_size: int = config.LINESTRIP_DILATION_KERNEL,
+    dilation_kernel_size: Optional[int] = None,
     source_file: Optional[str] = None,
     report_warnings: bool = True,
 ) -> np.ndarray:
@@ -338,6 +338,9 @@ def labelme_shapes_to_mask(
         Label map of shape (image_height, image_width) with class indices,
         background being 0.
     """
+    if dilation_kernel_size is None:
+        dilation_kernel_size = config.LINESTRIP_DILATION_KERNEL
+
     if thin_line_indices is None:
         thin_line_indices = {
             label_to_index[name.lower()]
@@ -912,9 +915,9 @@ def _compute_splits_hash(splits: Dict[str, List[str]]) -> str:
 
 def create_splits(
     overwrite: bool = False,
-    train_ratio: float = config.TRAIN_RATIO,
-    val_ratio: float = config.VAL_RATIO,
-    seed: int = config.RANDOM_SEED,
+    train_ratio: Optional[float] = None,
+    val_ratio: Optional[float] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, List[str]]:
     """Partition the dataset into train, validation and test sets.
 
@@ -944,6 +947,13 @@ def create_splits(
         ValueError: If the ratios are invalid or the dataset is too small to
             fill all three partitions.
     """
+    if train_ratio is None:
+        train_ratio = config.TRAIN_RATIO
+    if val_ratio is None:
+        val_ratio = config.VAL_RATIO
+    if seed is None:
+        seed = config.RANDOM_SEED
+
     splits_path = get_splits_path()
 
     if splits_path.exists() and not overwrite:

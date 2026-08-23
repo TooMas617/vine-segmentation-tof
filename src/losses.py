@@ -57,7 +57,7 @@ class DiceLoss(nn.Module):
 
     def __init__(
         self,
-        num_classes: int = config.NUM_CLASSES,
+        num_classes: Optional[int] = None,
         class_weights: Optional[torch.Tensor] = None,
         epsilon: float = DEFAULT_EPSILON,
     ) -> None:
@@ -69,6 +69,9 @@ class DiceLoss(nn.Module):
                 for an unweighted mean.
             epsilon: Constant guarding the division.
         """
+        if num_classes is None:
+            num_classes = config.NUM_CLASSES
+
         super().__init__()
         self.num_classes = num_classes
         self.epsilon = epsilon
@@ -126,7 +129,7 @@ class CombinedLoss(nn.Module):
         self,
         ce_weight: float,
         dice_weight: float,
-        num_classes: int = config.NUM_CLASSES,
+        num_classes: Optional[int] = None,
         class_weights: Optional[torch.Tensor] = None,
         use_weighted_dice: bool = True,
     ) -> None:
@@ -144,6 +147,9 @@ class CombinedLoss(nn.Module):
         Raises:
             ValueError: If the two shares do not sum to one.
         """
+        if num_classes is None:
+            num_classes = config.NUM_CLASSES
+
         super().__init__()
 
         if not 0.99 <= ce_weight + dice_weight <= 1.01:
