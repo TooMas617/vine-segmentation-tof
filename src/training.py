@@ -833,6 +833,10 @@ def code_fingerprint() -> str:
     code. The value can be matched back to a commit afterwards by computing it
     again on a checkout.
 
+    Line endings are normalised first. The sources are edited on Windows and
+    executed on Linux, and a fingerprint that changed with CRLF would report a
+    difference where the code is identical.
+
     Returns:
         First 8 hex characters of the SHA-256 over every module in src/, taken
         in name order, or "unknown" if the sources cannot be read.
@@ -844,7 +848,7 @@ def code_fingerprint() -> str:
             # The name matters as much as the content: renaming a module is a
             # change to the code that ran.
             digest.update(path.name.encode("utf-8"))
-            digest.update(path.read_bytes())
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
     except OSError:
         return "unknown"
 
