@@ -1595,60 +1595,61 @@ dell'augmentation: la partizione resta `62de0ec4` in tutte e tre.
 Tutta la variazione fra queste run è rumore per costruzione. È il metro con cui
 va letta ogni differenza riportata altrove.
 
-> **Misura parziale — da rifare.** `set_seed` aveva il valore di default
-> `seed: int = RANDOM_SEED`, valutato all'import: `config.set_seed()` senza
-> argomento rimetteva 42 qualunque valore fosse stato assegnato un istante
-> prima. Il difetto è stato scoperto dal log della cella 0.2, che stampava
-> `Random seed set to 42` mentre la cella assegnava 456.
->
-> Le tre run **condividono quindi l'inizializzazione dei pesi**. Hanno comunque
-> prodotto risultati diversi perché `create_dataloaders()` legge
-> `config.RANDOM_SEED` al momento della chiamata, quindi ordine dei campioni e
-> augmentation sono variati davvero.
->
-> I valori qui sotto misurano perciò **una sola delle due componenti** del
-> rumore, e sono un limite inferiore: aggiungere la varianza di
-> inizializzazione può solo allargarli. Le soglie sono quindi ottimistiche,
-> nella direzione pericolosa — indurrebbero a dichiarare significative
-> differenze che non lo sono. Le run con seed 123 e 456 vanno rifatte dopo la
-> correzione; quella con seed 42 resta valida, avendo ricevuto 42 come
-> previsto.
+*Nota storica.* Una prima misura era viziata: `set_seed` aveva il default
+`seed: int = RANDOM_SEED`, valutato all'import, quindi `config.set_seed()`
+rimetteva 42 qualunque valore fosse stato assegnato un istante prima. Le tre
+run condividevano l'inizializzazione dei pesi e variavano solo per l'ordine dei
+campioni. Sono state scartate e rifatte dopo la correzione; i valori qui sotto
+vengono dalle run rifatte, tutte con impronta del codice `195c6b62`.
 
-| grandezza | media | dev. std | soglia 2σ fra due run singole |
-|---|---|---|---|
-| test IoU (no bg) | 0,6441 | 0,0084 | **0,024** |
-| best val IoU | 0,6425 | 0,0091 | 0,026 |
-| test clDice medio | 0,8999 | 0,0030 | **0,008** |
-| precisione (val, epoca migliore) | 0,7827 | 0,0114 | **0,032** |
-| recall (val, epoca migliore) | 0,8510 | 0,0035 | 0,010 |
-| clDice `Cane` | 0,9142 | 0,0036 | 0,010 |
-| clDice `Cordon` | 0,8857 | 0,0044 | 0,012 |
+Tutte le grandezze sono misurate **sul test**, dal checkpoint migliore.
 
-Tre conseguenze, tutte operative.
+| grandezza | media | dev. std | escursione | soglia 2σ fra due run singole |
+|---|---|---|---|---|
+| IoU media (no bg) | 0,6442 | 0,0076 | 0,0151 | **0,021** |
+| best val IoU | 0,6428 | 0,0065 | 0,0120 | 0,018 |
+| clDice medio | 0,8996 | 0,0053 | 0,0102 | 0,015 |
+| precisione media | 0,7719 | 0,0051 | 0,0091 | 0,015 |
+| recall media | 0,8708 | 0,0065 | 0,0124 | 0,018 |
+| IoU `Cane` | 0,7167 | 0,0078 | 0,0142 | 0,022 |
+| IoU `Cordon` | 0,7760 | 0,0074 | 0,0143 | 0,021 |
+| IoU `Node` | 0,4556 | **0,0175** | 0,0306 | **0,049** |
+| IoU `Other` | 0,6286 | 0,0018 | 0,0035 | 0,005 |
+| clDice `Cane` | 0,9155 | 0,0050 | 0,0088 | 0,014 |
+| clDice `Cordon` | 0,8837 | 0,0059 | 0,0118 | 0,017 |
 
-**La griglia a seed singolo è uno strumento di screening, non di certificazione.**
-Due configurazioni che differiscono di meno di ~0,024 di test IoU sono
-indistinguibili, e vanno riportate come tali. Con differenze fra architetture
-plausibilmente in quell'ordine, è un esito da mettere in conto fin d'ora.
+**La griglia a seed singolo è uno strumento di screening, non di
+certificazione.** Due configurazioni che differiscono di meno di ~0,02 di test
+IoU sono indistinguibili e vanno riportate come tali. Con differenze fra
+architetture plausibilmente in quell'ordine, è un esito da mettere in conto.
 
-**clDice è tre volte più stabile della IoU** (0,0030 contro 0,0084) e risolve
-quindi differenze molto più piccole. Non sostituisce la IoU — per la sezione
-7.5 è cieco al gonfiamento del raggio — ma è lo strumento più fine sulla
-topologia, e le due vanno lette insieme.
+**`Node` è di gran lunga la classe più instabile:** σ = 0,0175 contro 0,0076
+della media, e una soglia di 0,049. Metà del suo intervallo di IoU è rumore.
+Qualunque conclusione su `Node` tratta da run singole — inclusa la decisione di
+eliminarlo, questione 7 — è priva di fondamento se la differenza in gioco è
+inferiore a cinque punti di IoU. `Other`, all'estremo opposto, è la più stabile
+di tutte con σ = 0,0018.
 
-**La precisione è tre volte più rumorosa del recall** (0,0114 contro 0,0035).
-Questo colpisce direttamente l'ablazione della sezione 7.6, la cui previsione è
-un *calo di precisione*: perché sia leggibile a seed singolo dovrebbe superare
-0,032, che è molto. L'ablazione va quindi eseguita **a tre seed per braccio**,
-altrimenti l'esito più probabile è un risultato non concludente — che verrebbe
-scambiato per assenza di effetto.
+**Sull'incertezza di queste stime.** Sono deviazioni standard da tre campioni:
+l'intervallo di confidenza al 95 % di una σ stimata con 2 gradi di libertà va
+da 0,52·σ̂ a 6,3·σ̂. Le soglie sono quindi stime puntuali con incertezza ampia,
+utilizzabili come regola pratica ma non come test statistico. Ne discende che
+per l'affermazione più delicata — l'ablazione della sezione 7.6 — conviene
+comunque **tre seed per braccio**: confrontare due medie di tre è molto più
+solido che confrontare due estrazioni singole, indipendentemente da quale
+componente domini il rumore.
 
-*Correzione al criterio sulle epoche.* La pendenza di fine training varia essa
-stessa col seed, e non poco: +3,16, +0,44 e +1,44 ×10⁻³ per epoca sulle tre
-run, un fattore sette a parità di architettura. Il criterio enunciato sopra
-non è quindi utilizzabile in assoluto, come era stato formulato inizialmente.
-L'inviluppo `UNet` è **da +0,4 a +3,2 ×10⁻³**: solo una pendenza fuori da
-questo intervallo indica un'architettura realmente troncata a metà salita.
+*Rettifica.* La misura viziata suggeriva che la precisione fosse tre volte più
+rumorosa del recall (0,0114 contro 0,0035), e su questo era stata costruita la
+motivazione dei tre seed per l'ablazione. La misura completa rovescia il
+rapporto: 0,0051 contro 0,0065. La raccomandazione resta, ma per la ragione
+esposta sopra, non per un eccesso di rumore sulla precisione.
+
+*Criterio sulle epoche.* La pendenza della val IoU di fine training varia essa
+stessa col seed in modo marcato, quindi va letta contro il proprio inviluppo e
+non in assoluto. L'inviluppo va ricalcolato sulle tre run attuali: quello
+citato in precedenza proveniva dalle run scartate. Le epoche migliori delle tre
+run — 59, 70 e 69 — mostrano comunque che il budget di 70 è un troncamento.
 
 **La direzione dello scheduler è derivata, non dichiarata.** `ReduceLROnPlateau`
 viene avanzato con `MONITOR_METRIC`, quindi la sua direzione **deve** essere
