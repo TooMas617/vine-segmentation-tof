@@ -228,6 +228,47 @@ INPUT_CHANNELS: int = sum(
     if is_enabled
 )
 
+
+def set_enabled_modalities(**modalities: bool) -> None:
+    """Enable or disable input modalities consistently, for an ablation.
+
+    The three names above are derived values computed at import time, so
+    assigning USE_CONFIDENCE alone changes nothing the Dataset reads while
+    still changing what build_config() records — a run labelled as an ablation
+    that quietly used every channel. This updates all of them together.
+
+    Args:
+        **modalities: Modality name to enabled flag, e.g. confidence=False.
+
+    Raises:
+        KeyError: If a name is not one of the declared modalities.
+
+    Example:
+        >>> config.set_enabled_modalities(confidence=False)
+    """
+    global INPUT_CHANNELS, USE_INTENSITY, USE_DEPTH, USE_CONFIDENCE
+
+    unknown = set(modalities) - set(MODALITY_CHANNELS)
+    if unknown:
+        raise KeyError(
+            f"unknown modalities {sorted(unknown)}, expected {sorted(MODALITY_CHANNELS)}"
+        )
+
+    ENABLED_MODALITIES.update(modalities)
+
+    if not any(ENABLED_MODALITIES.values()):
+        raise ValueError("at least one modality must stay enabled")
+
+    USE_INTENSITY = ENABLED_MODALITIES["intensity"]
+    USE_DEPTH = ENABLED_MODALITIES["depth"]
+    USE_CONFIDENCE = ENABLED_MODALITIES["confidence"]
+
+    INPUT_CHANNELS = sum(
+        MODALITY_CHANNELS[modality]
+        for modality, is_enabled in ENABLED_MODALITIES.items()
+        if is_enabled
+    )
+
 # Order in which the modalities are concatenated into the input tensor. Every
 # module that touches channels must agree on it: the EDA measures per-channel
 # statistics in this order and the Dataset stacks the modalities in this order,

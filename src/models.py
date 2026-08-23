@@ -202,8 +202,8 @@ class CustomUNet(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = config.INPUT_CHANNELS,
-        num_classes: int = config.NUM_CLASSES,
+        in_channels: Optional[int] = None,
+        num_classes: Optional[int] = None,
         base_channels: int = 64,
     ) -> None:
         """Assemble the network.
@@ -216,6 +216,14 @@ class CustomUNet(nn.Module):
                 the knob to turn when the model does not fit in GPU memory.
         """
         super().__init__()
+
+        # Resolved here and not in the signature: a default argument is bound
+        # at import, so an ablation that drops a modality from a notebook would
+        # never reach the model — it would build a network for the old channel
+        # count and fail on the first batch.
+        in_channels = config.INPUT_CHANNELS if in_channels is None else in_channels
+        num_classes = config.NUM_CLASSES if num_classes is None else num_classes
+
         self.in_channels = in_channels
         self.num_classes = num_classes
 
@@ -278,8 +286,8 @@ class SegNet(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = config.INPUT_CHANNELS,
-        num_classes: int = config.NUM_CLASSES,
+        in_channels: Optional[int] = None,
+        num_classes: Optional[int] = None,
         base_channels: int = 64,
     ) -> None:
         """Assemble the network.
@@ -290,6 +298,14 @@ class SegNet(nn.Module):
             base_channels: Channels after the first encoder block.
         """
         super().__init__()
+
+        # Resolved here and not in the signature: a default argument is bound
+        # at import, so an ablation that drops a modality from a notebook would
+        # never reach the model — it would build a network for the old channel
+        # count and fail on the first batch.
+        in_channels = config.INPUT_CHANNELS if in_channels is None else in_channels
+        num_classes = config.NUM_CLASSES if num_classes is None else num_classes
+
         self.in_channels = in_channels
         self.num_classes = num_classes
 
@@ -434,8 +450,8 @@ class CustomPSPNet(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = config.INPUT_CHANNELS,
-        num_classes: int = config.NUM_CLASSES,
+        in_channels: Optional[int] = None,
+        num_classes: Optional[int] = None,
         base_channels: int = 64,
         pool_sizes: Sequence[int] = DEFAULT_POOL_SIZES,
         dropout: float = 0.1,
@@ -452,6 +468,14 @@ class CustomPSPNet(nn.Module):
             dropout: Dropout applied before the classifier.
         """
         super().__init__()
+
+        # Resolved here and not in the signature: a default argument is bound
+        # at import, so an ablation that drops a modality from a notebook would
+        # never reach the model — it would build a network for the old channel
+        # count and fail on the first batch.
+        in_channels = config.INPUT_CHANNELS if in_channels is None else in_channels
+        num_classes = config.NUM_CLASSES if num_classes is None else num_classes
+
         self.in_channels = in_channels
         self.num_classes = num_classes
 
@@ -527,8 +551,8 @@ class CustomPSPNet(nn.Module):
 
 def create_model(
     architecture: Optional[str] = None,
-    in_channels: int = config.INPUT_CHANNELS,
-    num_classes: int = config.NUM_CLASSES,
+    in_channels: Optional[int] = None,
+    num_classes: Optional[int] = None,
     base_channels: Optional[int] = None,
 ) -> nn.Module:
     """Build the architecture named by the configuration.
@@ -554,6 +578,10 @@ def create_model(
     """
     if architecture is None:
         architecture = config.ARCHITECTURE
+    if in_channels is None:
+        in_channels = config.INPUT_CHANNELS
+    if num_classes is None:
+        num_classes = config.NUM_CLASSES
 
     if config.ENCODER_WEIGHTS is not None:
         raise ValueError(
@@ -603,7 +631,7 @@ def count_parameters(module: nn.Module) -> int:
 def test_model(
     model: nn.Module,
     input_shape: Optional[Tuple[int, int, int, int]] = None,
-    num_classes: int = config.NUM_CLASSES,
+    num_classes: Optional[int] = None,
     check_backward: bool = True,
     verbose: bool = True,
 ) -> bool:
@@ -626,6 +654,9 @@ def test_model(
         True if the output has the expected shape and the backward pass, when
         requested, completed.
     """
+    if num_classes is None:
+        num_classes = config.NUM_CLASSES
+
     if input_shape is None:
         input_shape = (
             config.BATCH_SIZE,
