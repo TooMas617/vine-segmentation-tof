@@ -1595,6 +1595,25 @@ dell'augmentation: la partizione resta `62de0ec4` in tutte e tre.
 Tutta la variazione fra queste run è rumore per costruzione. È il metro con cui
 va letta ogni differenza riportata altrove.
 
+> **Misura parziale — da rifare.** `set_seed` aveva il valore di default
+> `seed: int = RANDOM_SEED`, valutato all'import: `config.set_seed()` senza
+> argomento rimetteva 42 qualunque valore fosse stato assegnato un istante
+> prima. Il difetto è stato scoperto dal log della cella 0.2, che stampava
+> `Random seed set to 42` mentre la cella assegnava 456.
+>
+> Le tre run **condividono quindi l'inizializzazione dei pesi**. Hanno comunque
+> prodotto risultati diversi perché `create_dataloaders()` legge
+> `config.RANDOM_SEED` al momento della chiamata, quindi ordine dei campioni e
+> augmentation sono variati davvero.
+>
+> I valori qui sotto misurano perciò **una sola delle due componenti** del
+> rumore, e sono un limite inferiore: aggiungere la varianza di
+> inizializzazione può solo allargarli. Le soglie sono quindi ottimistiche,
+> nella direzione pericolosa — indurrebbero a dichiarare significative
+> differenze che non lo sono. Le run con seed 123 e 456 vanno rifatte dopo la
+> correzione; quella con seed 42 resta valida, avendo ricevuto 42 come
+> previsto.
+
 | grandezza | media | dev. std | soglia 2σ fra due run singole |
 |---|---|---|---|
 | test IoU (no bg) | 0,6441 | 0,0084 | **0,024** |
