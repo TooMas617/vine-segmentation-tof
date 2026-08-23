@@ -71,6 +71,8 @@ VineProject_ToF/
 │   ├── 02_EDA.ipynb
 │   ├── 03_Training.ipynb
 │   └── 04_Evaluation.ipynb
+├── tools/
+│   └── check_config_defaults.py  guard: no default argument may read config
 ├── docs/
 │   └── pipeline_notes.md    design decisions and rationale (Italian)
 ├── data/                    NOT under version control
@@ -188,6 +190,17 @@ Full rationale in `docs/pipeline_notes.md`.
   values left over from a different partition are reported instead of silently
   applied. The caller passes the current hash in: `config.py` cannot read the
   split itself without a circular import.
+- **No default argument may read `config`.** A default is evaluated once at
+  import, so `def f(n = config.NUM_EPOCHS)` freezes the value and a notebook
+  override changes nothing — silently, while every log says otherwise. This
+  reached the experiments three times. Resolve in the body
+  (`if n is None: n = config.NUM_EPOCHS`) and run
+  `python tools/check_config_defaults.py` before uploading modules for a run.
+- **Runs are stamped with `code_fingerprint`, not only `git_commit`.** Colab
+  trains from a copy of the Drive folder with no `.git`, so `git_commit` is
+  always `unknown` there. The fingerprint hashes `src/*.py`, so two runs share
+  it exactly when they ran the same code, and it can be matched to a commit
+  afterwards by recomputing it on a checkout.
 - **A sample is taken out of the dataset by moving its files out of
   `data/raw/`, never by filtering it in code.** The pipeline starts from the
   JSON files in `data/raw/annotations`, so a moved sample disappears from

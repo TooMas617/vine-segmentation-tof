@@ -17,6 +17,7 @@ Typical usage from notebook 03:
     tracker, best_checkpoint = train_model(model, dataloaders, criterion)
 """
 
+import hashlib
 import json
 import subprocess
 import time
@@ -556,6 +557,7 @@ def train_model(
         # "enabled" says what was configured; "applied" says what actually ran.
         run_config["skeleton_loss"]["applied"] = skeleton_criterion is not None
         run_config["git_commit"] = git_commit_hash()
+        run_config["code_fingerprint"] = code_fingerprint()
         config_path.write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
     best_checkpoint = checkpoints_dir / BEST_CHECKPOINT_FILENAME
@@ -818,6 +820,37 @@ def git_commit_hash() -> str:
         return "unknown"
 
 
+def code_fingerprint() -> str:
+    """Return a hash of the source the run is executing.
+
+    git_commit_hash() answers "unknown" on Colab, where the project is a copy
+    of the Drive folder and carries no .git directory — so every run of the
+    campaign was recorded without any link to a version of the code. That is
+    not survivable when the modules change between runs, which they have.
+
+    Hashing the sources themselves needs no repository and no discipline from
+    the caller: two runs share a fingerprint exactly when they ran the same
+    code. The value can be matched back to a commit afterwards by computing it
+    again on a checkout.
+
+    Returns:
+        First 8 hex characters of the SHA-256 over every module in src/, taken
+        in name order, or "unknown" if the sources cannot be read.
+    """
+    digest = hashlib.sha256()
+
+    try:
+        for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+            # The name matters as much as the content: renaming a module is a
+            # change to the code that ran.
+            digest.update(path.name.encode("utf-8"))
+            digest.update(path.read_bytes())
+    except OSError:
+        return "unknown"
+
+    return digest.hexdigest()[:8]
+
+
 def build_result_row(
     run_id: str,
     tracker: MetricsTracker,
@@ -854,6 +887,7 @@ def build_result_row(
         "run_id": run_id,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "git_commit": git_commit_hash(),
+        "code_fingerprint": code_fingerprint(),
         "splits_hash": splits_hash,
         # --- configuration ---
         "architecture": config.ARCHITECTURE,
