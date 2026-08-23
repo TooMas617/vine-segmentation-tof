@@ -912,6 +912,10 @@ def build_result_row(
         "learning_rate": config.OPTIMIZER_CONFIG["lr"],
         "weight_decay": config.OPTIMIZER_CONFIG["weight_decay"],
         "scheduler": config.SCHEDULER_CONFIG["type"],
+        # In the table and not only in config.json: the runs that measure
+        # run-to-run noise differ by nothing else, so a comparison that cannot
+        # see the seed cannot see what separates them.
+        "random_seed": config.RANDOM_SEED,
         # --- course of the run ---
         "epochs_run": len(val_history),
         "best_epoch": best_epoch,
