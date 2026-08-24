@@ -2024,6 +2024,58 @@ verifica l'ipotesi al costo di una run.
 *Stato:* il confronto è per ora limitato a `UNet` e a un solo seed per loss.
 `SegNet` e `PSPNet` completano la griglia.
 
+### I pesi di classe peggiorano il modello
+
+La sonda sulla Focal senza pesi ha prodotto un risultato inatteso — precisione
+in forte crescita, recall in calo, IoU media la migliore fino a quel momento —
+ma **confondeva due fattori**: la loss e la pesatura. Il controllo è stato
+`ce` senza pesi, poi replicato su tre seed per entrambe le configurazioni.
+
+Due gruppi da tre run, identici in tutto tranne `apply_weights`. Test t di
+Welch, `UNet`, budget 70, seed 42/123/456.
+
+| metrica | pesata (n=3) | senza pesi (n=3) | differenza | p |
+|---|---|---|---|---|
+| IoU media | 0,6442 ± 0,0076 | **0,6674 ± 0,0075** | +0,0232 | 0,020 |
+| precisione | 0,7719 ± 0,0051 | **0,8500 ± 0,0132** | +0,0781 | 0,004 |
+| recall | 0,8708 ± 0,0065 | 0,8120 ± 0,0030 | −0,0587 | 0,001 |
+| clDice | 0,8996 ± 0,0053 | 0,9087 ± 0,0056 | +0,0092 | 0,109 |
+| IoU `Cane` | 0,7167 ± 0,0078 | **0,7481 ± 0,0067** | +0,0314 | 0,007 |
+| IoU `Cordon` | 0,7760 ± 0,0074 | **0,8009 ± 0,0068** | +0,0250 | 0,013 |
+| IoU `Node` | 0,4556 ± 0,0175 | 0,4356 ± 0,0147 | −0,0201 | 0,204 |
+| IoU `Other` | 0,6286 ± 0,0018 | **0,6849 ± 0,0070** | +0,0563 | 0,003 |
+
+**Togliere i pesi migliora `Cane`, `Cordon`, `Other` e la IoU media, e inverte
+il compromesso:** il divario recall−precisione passa da **+0,099 a −0,038**. Per
+la prima volta il modello è più preciso che sensibile — smette di gonfiare i
+tralci, che è il difetto noto fin dall'inizio.
+
+**`Node`, la classe che i pesi esistevano per proteggere, non ne trae
+beneficio** (p = 0,20). I pesi ne spostano solo il compromesso interno: recall
+da 0,52 a 0,57, precisione da 0,75 a 0,63. Si pagano tre classi su quattro per
+riequilibrare la quarta senza migliorarla.
+
+*Meccanismo, ed è lo stesso della Focal.* `mean_iou_no_bg` è una media **macro**:
+le quattro classi in primo piano pesano uguale a prescindere dalla frequenza,
+quindi **la metrica bilancia già le classi**. Aggiungere `sqrt_inverse` nella
+loss — `Node` ×17,7 — le bilancia una seconda volta, nella stessa direzione. È
+la doppia correzione già vista fra γ e α nella Focal; la Focal pesata era la
+peggiore di tutte perché ne accumulava tre.
+
+*Cautele.* Tre run per gruppo: il test t ha pochi gradi di libertà e i valori p
+sono approssimati. Con una correzione di Bonferroni su otto confronti
+(α = 0,00625) sopravvivono precisione, recall, `Cane` e `Other`; IoU media e
+`Cordon` no. La direzione è però concorde su tutte le metriche di area e le
+dimensioni dell'effetto sono grandi. Il risultato è su `UNet` soltanto.
+
+*Conseguenze.* La configurazione di riferimento del progetto va rimessa in
+discussione: le otto run precedenti usano una baseline che questi dati indicano
+come subottimale. L'ablazione della sezione 7.6 va eseguita sulla baseline non
+pesata, o misurerebbe l'effetto della Skeleton Recall Loss su un modello mal
+configurato. E la questione 7 si riapre: se i pesi non migliorano la IoU di
+`Node`, e `Node` resta la classe peggiore e più rumorosa, escluderla con
+`LABELS_TO_IGNORE` diventa più difendibile.
+
 ### Limite dichiarato di questo confronto
 
 `SegNet` e `PSPNet` hanno **una sola run ciascuna**: le differenze sono valutate
@@ -2062,7 +2114,8 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 | 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Solo se i risultati la giustificassero |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
-| 13 | Criterio di ordinamento della tabella comparativa e scelta di `MONITOR_METRIC` — sezione 7.5 | Prima degli esperimenti definitivi |
+| 13 | Criterio di ordinamento della tabella comparativa — sezione 7.5. La scelta di `MONITOR_METRIC` è invece **chiusa**: la sonda a 200 epoche mostra che la val loss tocca il minimo 65 epoche prima del massimo della IoU, e fermarsi su di essa costerebbe 0,048 di IoU | Prima della tabella finale |
+| 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. Misurato su `UNet` a tre seed: togliere `sqrt_inverse` migliora IoU media, `Cane`, `Cordon` e `Other`, inverte il divario recall−precisione e non peggiora `Node` in modo significativo. Da confermare su `SegNet` e `PSPNet` prima di adottarla come baseline della campagna | Prossima sessione |
 
 ---
 
