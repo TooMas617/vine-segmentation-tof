@@ -1974,6 +1974,56 @@ IoU, più del doppio della soglia di rumore.
 
 Costo della sonda: 81 minuti per 135 epoche, 35,8 s/epoca.
 
+### Confronto fra loss su `UNet` — parziale
+
+Stesso disegno, architettura fissa a `UNet`, seed 42, budget 70, pesi di classe
+`sqrt_inverse` attivi in tutti e tre i casi. Tenere i pesi accesi anche per la
+Focal è deliberato: spegnerli solo lì confonderebbe «Focal contro CE» con
+«pesata contro non pesata». Riferimento: le tre run `ce` a seed diverso.
+
+| metrica | `ce` (n=3) | `combined` | `focal` | soglia |
+|---|---|---|---|---|
+| IoU media | 0,6442 ± 0,0076 | 0,6560 (+0,0118) | 0,6263 (−0,0179) | 0,0214 |
+| precisione | 0,7719 ± 0,0051 | **0,7977 (+0,0258)** | 0,7575 (−0,0144) | 0,0145 |
+| recall | 0,8708 ± 0,0065 | 0,8559 (−0,0149) | 0,8640 (−0,0068) | 0,0184 |
+| clDice | 0,8996 ± 0,0053 | 0,8922 (−0,0074) | 0,8881 (−0,0115) | 0,0149 |
+| IoU `Cane` | 0,7167 ± 0,0078 | 0,7127 (−0,0040) | 0,7005 (−0,0162) | 0,0220 |
+| IoU `Cordon` | 0,7760 ± 0,0074 | 0,7715 (−0,0045) | 0,7596 (−0,0164) | 0,0208 |
+| IoU `Node` | 0,4556 ± 0,0175 | 0,4842 (+0,0286) | 0,4357 (−0,0200) | 0,0494 |
+| IoU `Other` | 0,6286 ± 0,0018 | **0,6556 (+0,0270)** | **0,6095 (−0,0191)** | 0,0050 |
+
+**`combined` sposta il modello verso la precisione.** La IoU media resta dentro
+il rumore, ma la precisione sale di 0,026 oltre soglia e il divario
+recall−precisione passa da **+0,099 a +0,058**, quasi dimezzato. È il termine
+Dice che penalizza i falsi positivi in modo che la sola cross-entropy pesata non
+fa. Costa il 9 % di tempo per epoca.
+
+Il dato è rilevante per la sezione 7.6: l'ablazione prevede che la Skeleton
+Recall Loss *allarghi* quel divario. Avere una loss che lo restringe fornisce il
+contrasto con cui leggere quel risultato.
+
+**`focal` è peggiore su tutte e otto le metriche, e su nessuna migliore.**
+Presa una per una, quasi nessuna differenza supera la soglia; è la
+**concordanza dei segni** a essere informativa — otto su otto nella stessa
+direzione. Sotto indipendenza sarebbe p ≈ 0,008, ma le metriche sono fra loro
+correlate, quindi il valore va letto come indizio e non come test. Il divario
+recall−precisione resta a +0,107, quindi non è nemmeno un compromesso diverso:
+è semplicemente peggio.
+
+*Interpretazione, e la verifica che ne discende.* La `FocalLoss` del progetto è
+cross-entropy pesata per classe moltiplicata per `(1−p)^γ`: i pesi di classe
+svolgono il ruolo di **α** in Lin et al. Nell'articolo originale, con γ = 2 il
+valore migliore era **α = 0,25 sulla classe rara** — gli autori la
+*abbassavano*, perché γ già concentra sugli esempi difficili. I nostri pesi
+`sqrt_inverse` alzano `Node` di 17,7 volte. I due meccanismi correggono lo
+sbilanciamento **nella stessa direzione**, molto più forte di qualunque
+configurazione che gli autori abbiano testato, ed è la spiegazione più naturale
+del risultato. Una run sonda con `apply_weights = False` sulla sola Focal
+verifica l'ipotesi al costo di una run.
+
+*Stato:* il confronto è per ora limitato a `UNet` e a un solo seed per loss.
+`SegNet` e `PSPNet` completano la griglia.
+
 ### Limite dichiarato di questo confronto
 
 `SegNet` e `PSPNet` hanno **una sola run ciascuna**: le differenze sono valutate
