@@ -1935,6 +1935,45 @@ Regola fissata prima di eseguirla:
   soglia di rumore → il budget va alzato e le cinque run vanno rifatte prima di
   proseguire con la griglia
 
+### Esito della sonda: il budget di 70 epoche resta
+
+La run si è fermata **da sola all'epoca 135**, con l'early stopping a
+`patience 20`, massimo all'epoca 115. Il meccanismo non era mai potuto scattare
+a 70 epoche; alla prima occasione ha funzionato come previsto.
+
+Il confronto va fatto **fra massimi, non fra epoche omologhe**: una run da 70
+epoche non riporta il valore dell'epoca 70, riporta il miglior checkpoint fino
+a lì, e la mean IoU di validazione oscilla di ±0,02 fra epoche consecutive.
+
+| | best val IoU |
+|---|---|
+| miglior checkpoint entro l'epoca 70 | 0,6501 (epoca 69) |
+| miglior checkpoint sulle 135 | 0,6625 (epoca 115) |
+| **guadagno** | **+0,0124 (+1,9 %)** |
+| soglia di rumore fra run identiche | 0,0214 |
+
+**Raddoppiare il tempo di addestramento produce meno del rumore fra run
+identiche.** Il budget di 70 epoche cattura il 98,1 % della mean IoU raggiunta
+a convergenza, e il deficit non è distinguibile dalla dispersione fra seed.
+
+*Ricaduta sull'equità del confronto.* La preoccupazione era che `SegNet`, già
+piatta a 70 epoche, fosse avvantaggiata rispetto a `UNet` e `PSPNet` ancora in
+salita. La sonda quantifica quel vantaggio: **al massimo +0,012 per le due che
+salgono, meno per `SegNet`**, cioè circa metà della soglia di rumore. La
+conclusione «le tre architetture sono indistinguibili» vale quindi a entrambi i
+budget; cambierebbe solo l'ordine nominale, che è comunque privo di
+significato. La questione è chiusa con una misura invece che con un'assunzione.
+
+*Un risultato collaterale che vale la pena riportare.* La val loss tocca il
+minimo all'**epoca 50** e da lì peggiora lentamente, mentre la mean IoU
+continua a salire fino all'**epoca 115**: **65 epoche in cui la loss dice di
+fermarsi e la metrica dice di continuare.** È la giustificazione empirica di
+`MONITOR_METRIC = "mean_iou_no_bg"` invece della val loss — con la loss come
+criterio, l'early stopping avrebbe interrotto l'addestramento perdendo 0,048 di
+IoU, più del doppio della soglia di rumore.
+
+Costo della sonda: 81 minuti per 135 epoche, 35,8 s/epoca.
+
 ### Limite dichiarato di questo confronto
 
 `SegNet` e `PSPNet` hanno **una sola run ciascuna**: le differenze sono valutate
