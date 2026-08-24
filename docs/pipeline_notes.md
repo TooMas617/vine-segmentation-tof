@@ -1645,11 +1645,30 @@ motivazione dei tre seed per l'ablazione. La misura completa rovescia il
 rapporto: 0,0051 contro 0,0065. La raccomandazione resta, ma per la ragione
 esposta sopra, non per un eccesso di rumore sulla precisione.
 
-*Criterio sulle epoche.* La pendenza della val IoU di fine training varia essa
-stessa col seed in modo marcato, quindi va letta contro il proprio inviluppo e
-non in assoluto. L'inviluppo va ricalcolato sulle tre run attuali: quello
-citato in precedenza proveniva dalle run scartate. Le epoche migliori delle tre
-run — 59, 70 e 69 — mostrano comunque che il budget di 70 è un troncamento.
+*Criterio sulle epoche — inviluppo misurato.* La pendenza della val IoU di fine
+training varia col seed, quindi va letta contro il proprio inviluppo e non in
+assoluto. Sulle tre run, regressione lineare sulle ultime dieci epoche:
+
+| run | pendenza ×10⁻³ per epoca | IoU guadagnata fra ep. 50 e 70 |
+|---|---|---|
+| seed 42 | +1,32 | +0,0151 |
+| seed 123 | +2,77 | +0,0425 |
+| seed 456 | +2,85 | +0,0408 |
+
+**Inviluppo `UNet`: da +1,3 a +2,9.** Un'architettura che esca sensibilmente
+sopra questo intervallo è penalizzata dal budget, non dalla propria qualità, e
+per quella si alza il budget dichiarandolo.
+
+*Il budget è un troncamento, e va detto senza attenuazioni.* Le epoche migliori
+sono 59, 70 e 69, e il guadagno fra l'epoca 50 e la 70 arriva a +0,04, cioè al
+doppio della soglia di rumore. Nel frattempo la train loss continua a scendere
+(da −0,016 a −0,046 nello stesso intervallo) mentre la val loss è piatta: il
+modello affina il confine di decisione oltre il punto in cui la loss smette di
+migliorare. Non è convergenza, ed è scorretto presentarla come tale.
+
+Se il tempo lo consente a fine campagna, **una singola run a 150 epoche sulla
+configurazione migliore** permette di quantificare ciò che il budget lascia sul
+piatto, invece di tacerlo.
 
 **La direzione dello scheduler è derivata, non dichiarata.** `ReduceLROnPlateau`
 viene avanzato con `MONITOR_METRIC`, quindi la sua direzione **deve** essere
