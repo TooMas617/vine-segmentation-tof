@@ -1845,6 +1845,106 @@ non coincidono.
 
 ---
 
+## 12. Risultati — confronto fra architetture a budget 70
+
+### Disegno
+
+Cinque run, identiche in tutto tranne l'architettura e, per `UNet`, il seed:
+`ce` con pesi `sqrt_inverse`, AdamW `1e-4`, ReduceLROnPlateau, batch 4, 512×512,
+5 canali, 70 epoche, skeleton loss spenta, split `62de0ec4`. Impronta del
+codice `195c6b62` per le tre `UNet`, `d90d5da1` per `SegNet` e `PSPNet` — le due
+differiscono per quattro righe dentro `build_result_row`, che costruisce la riga
+CSV a training concluso e non può influire su modello, dati o metriche
+(verificato con `git diff`).
+
+Le metriche sono sul **test**, dal checkpoint migliore per `mean_iou_no_bg`.
+Le soglie sono `2σ√2` calcolate sulla dispersione fra i tre seed di `UNet`.
+
+### Sulla metrica principale non c'è differenza
+
+| metrica | `UNet` (n=3) | `SegNet` | `PSPNet` | soglia |
+|---|---|---|---|---|
+| IoU media (no bg) | 0,6442 ± 0,0076 | 0,6496 | 0,6398 | 0,0214 |
+| precisione media | 0,7719 ± 0,0051 | 0,7759 | **0,7882** | 0,0145 |
+| recall media | 0,8708 ± 0,0065 | 0,8720 | **0,8459** | 0,0184 |
+| clDice medio | 0,8996 ± 0,0053 | 0,8974 | **0,8785** | 0,0149 |
+
+`SegNet` +0,0054 e `PSPNet` −0,0045 rispetto alla media `UNet`: entrambe entro
+il rumore. **Sulla mean IoU le tre architetture sono indistinguibili**, e va
+riportato così invece di ordinarle.
+
+### La media aggregata nasconde però una differenza reale
+
+| IoU per classe | `UNet` (n=3) | `SegNet` | `PSPNet` | soglia |
+|---|---|---|---|---|
+| `Cane` | 0,7167 ± 0,0078 | −0,0030 | **−0,0573** | 0,0220 |
+| `Cordon` | 0,7760 ± 0,0074 | +0,0002 | +0,0123 | 0,0208 |
+| `Node` | 0,4556 ± 0,0175 | −0,0022 | +0,0129 | 0,0494 |
+| `Other` | 0,6286 ± 0,0018 | **+0,0264** | **+0,0143** | 0,0050 |
+
+`PSPNet` è spostata lungo il compromesso precisione/recall — più precisa, meno
+recall, peggiore sulla topologia — e perde **0,057 di IoU su `Cane`**, la
+differenza più grande dell'intero confronto e sulla classe che il progetto deve
+segmentare meglio.
+
+*La spiegazione è architetturale, ed è la stessa misura della sezione 8 vista
+dall'altro lato.* `PSPNet` non ha **nessuna convoluzione a piena risoluzione**:
+scende subito, lavora la piramide a bassa risoluzione e risale con un solo
+upsample bilineare. È il motivo per cui costa 1,25 GB contro i 3,34 di `UNet` e
+i 5,32 di `SegNet`, ed è il motivo per cui i tralci — strutture larghe pochi
+pixel — non sopravvivono. Economia di attivazioni e perdita di dettaglio fine
+sono la stessa proprietà.
+
+`SegNet` è invece indistinguibile da `UNet` ovunque tranne su `Other`, e costa
+**52 s/epoca contro 32**, il 62 % in più a parità di parametri.
+
+### Le tre non sono alla stessa distanza dalla convergenza
+
+Regressione lineare della mean IoU di validazione sulle ultime dieci epoche:
+
+| | pendenza ×10⁻³ per epoca | IoU guadagnata ep. 50→70 |
+|---|---|---|
+| `UNet` (inviluppo su 3 seed) | da **+1,32 a +2,85** | da +0,015 a +0,043 |
+| `PSPNet` | +1,45 — dentro l'inviluppo | +0,019 |
+| `SegNet` | **+0,44 — sotto l'inviluppo** | +0,011 |
+
+**Questo è il risultato più importante dei cinque run, ed è metodologico.**
+`SegNet` ha spianato mentre `UNet` e `PSPNet` stanno ancora salendo — ed è
+proprio `SegNet` quella che nominalmente guida sulla IoU. Il confronto a 70
+epoche è quindi **dipendente dal budget**: estendendolo, le due che salgono
+guadagnerebbero e la terza quasi no, e un pareggio potrebbe diventare un
+distacco senza che nessun modello sia cambiato.
+
+Il criterio era stato formulato per intercettare un'architettura *troncata a
+metà salita*; il caso reale è l'opposto — una che ha già finito mentre le altre
+no. La conseguenza è la stessa: il budget pareggiato non basta a rendere il
+confronto equo.
+
+### Come viene chiusa la questione
+
+Una run sonda: `UNet` + `ce` + seed 42 con `NUM_EPOCHS = 200`, lasciando
+lavorare l'early stopping a `patience 20`, che a 70 epoche non poteva mai
+scattare. Il punto in cui si ferma **è** la risposta.
+
+Regola fissata prima di eseguirla:
+
+- se si ferma entro ~110 epoche **e** la IoU a 70 è entro il 3 % del massimo →
+  il budget di 70 resta, e la sonda diventa una misura riportabile invece di un
+  dubbio taciuto
+- se il guadagno oltre l'epoca 70 supera **0,03**, cioè una volta e mezza la
+  soglia di rumore → il budget va alzato e le cinque run vanno rifatte prima di
+  proseguire con la griglia
+
+### Limite dichiarato di questo confronto
+
+`SegNet` e `PSPNet` hanno **una sola run ciascuna**: le differenze sono valutate
+contro la σ misurata su `UNet`, assumendo che la dispersione sia comparabile fra
+architetture. È un'assunzione, non una misura. Per l'affermazione finale
+servono tre seed anche per loro — sei run, da eseguire una volta fissato il
+budget e non prima.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
