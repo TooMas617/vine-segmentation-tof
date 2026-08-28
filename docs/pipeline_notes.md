@@ -1334,6 +1334,71 @@ mette in grafico accanto alla loss.
 Confermare o smentire l'ipotesi sui propri dati vale più di una citazione: una
 critica pubblicata alla loss adottata esiste, e va affrontata con una misura.
 
+### 7.7 Esito dell'ablazione: la previsione era sbagliata sul piano giusto
+
+Tre seed per braccio (42, 123, 456), `UNet` + `ce`, **baseline senza pesi di
+classe** — la configurazione adottata in sezione 12 — budget 70, tutto il resto
+invariato. La SRL con `weight = 0.5`, kernel 2, `skeleton_classes = [1, 2]`.
+Test t di Welch.
+
+**Metriche di area:**
+
+| metrica | senza SRL | con SRL | differenza | p |
+|---|---|---|---|---|
+| IoU media | 0,6674 ± 0,0075 | 0,6243 ± 0,0089 | **−0,0431** | **0,003** |
+| precisione | 0,8500 ± 0,0132 | 0,8359 ± 0,0148 | −0,0141 | 0,286 |
+| recall | 0,8120 ± 0,0030 | 0,7765 ± 0,0176 | −0,0356 | 0,069 |
+| clDice medio | 0,9087 ± 0,0056 | 0,9012 ± 0,0035 | −0,0075 | 0,135 |
+| IoU `Cane` | 0,7481 ± 0,0067 | 0,7358 ± 0,0047 | −0,0122 | 0,068 |
+| IoU `Cordon` | 0,8009 ± 0,0068 | 0,7863 ± 0,0022 | −0,0146 | 0,054 |
+| IoU `Node` | 0,4356 ± 0,0147 | 0,3370 ± 0,0584 | −0,0986 | 0,092 |
+| IoU `Other` | 0,6849 ± 0,0070 | 0,6380 ± 0,0198 | **−0,0469** | **0,042** |
+
+**Metriche topologiche — dove la loss opera per costruzione:**
+
+| metrica | senza SRL | con SRL | differenza | p |
+|---|---|---|---|---|
+| top. **recall** `Cane` | 0,9212 ± 0,0025 | **0,9469 ± 0,0055** | **+0,0257** | **0,007** |
+| top. **precision** `Cane` | 0,9325 ± 0,0062 | 0,9027 ± 0,0055 | **−0,0298** | **0,003** |
+| top. precision `Cordon` | 0,9065 ± 0,0021 | 0,8966 ± 0,0102 | −0,0100 | 0,228 |
+| top. recall `Cordon` | 0,8755 ± 0,0187 | 0,8607 ± 0,0021 | −0,0148 | 0,304 |
+
+**La previsione della sezione 7.6 va corretta su due punti.**
+
+Prevedeva uno scambio precisione↔recall **sulle metriche di area**: precisione
+in calo, recall stabile o in crescita. Nessuna delle due cose accade. La
+precisione di area **non si muove in modo significativo** (p = 0,29) e il recall
+di area **scende** invece di salire. Sull'area non c'è alcuno scambio: c'è un
+peggioramento uniforme, guidato dalla IoU media che cala di 0,043 con p = 0,003.
+
+Lo scambio previsto esiste, ma **sulle metriche topologiche**, ed è il risultato
+più netto dell'intera ablazione: recall topologico su `Cane` +0,026 e precisione
+topologica −0,030, entrambi con p < 0,01. Sono le due misure con i valori p più
+bassi di tutta la tabella.
+
+**La lettura corretta è quindi:** la Skeleton Recall Loss fa esattamente ciò che
+dichiara, sulla struttura che prende di mira — recupera linea centrale al prezzo
+della precisione della linea centrale — **e le metriche di area pagano il conto
+senza ricevere nulla in cambio.** Su questo dataset non è un compromesso da
+scegliere in base alle priorità: è un costo netto sulla segmentazione di area a
+fronte di un guadagno confinato alla topologia di una sola classe.
+
+*Il caso `Node`.* È la classe che perde di più (−0,099) pur **non essendo un
+bersaglio della loss**: `skeleton_classes = [1, 2]` copre `Cane` e `Cordon`. Il
+meccanismo plausibile è quello misurato in sezione 5 — il 54 % dei pixel di
+`Node` giace sul cordone — quindi una loss che spinge massa di probabilità lungo
+la linea centrale del cordone assorbe i nodi che le stanno sopra. La SRL rende
+inoltre `Node` molto più instabile: σ passa da 0,015 a 0,058, quasi quattro
+volte, ed è per questo che una differenza di quasi dieci punti resta a p = 0,09.
+
+*Sulla critica di Arora et al.* La sezione 7.4 aveva stabilito che l'obiezione
+sul gradiente costante non regge a livello dei logit, ma che l'asimmetria
+recall/precisione della loss è reale. Questi dati confermano l'asimmetria e ne
+precisano il luogo: si manifesta sulla topologia, non sull'area, e su questo
+dataset il saldo complessivo è negativo. Non è una conferma della critica come
+formulata, ed è un risultato indipendente sia dall'articolo originale sia dalla
+sua confutazione.
+
 ---
 
 ## 8. Modelli
@@ -2170,7 +2235,7 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 |---|---|---|
 | 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Solo se i risultati la giustificassero |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
-| 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
+| 12 | Ablazione con e senza Skeleton Recall Loss | **Risolta:** 3 seed per braccio, sezione 7.7. La previsione della 7.6 è corretta sul meccanismo ma sbagliata sul piano: lo scambio precisione↔recall avviene sulle metriche topologiche (p < 0,01), mentre sull'area il saldo è un peggioramento uniforme (IoU −0,043, p = 0,003) |
 | 13 | Criterio di ordinamento della tabella comparativa — sezione 7.5. La scelta di `MONITOR_METRIC` è invece **chiusa**: la sonda a 200 epoche mostra che la val loss tocca il minimo 65 epoche prima del massimo della IoU, e fermarsi su di essa costerebbe 0,048 di IoU | Prima della tabella finale |
 | 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. **Risolta:** adottata. Migliora `UNet` (+0,023, n=3) e `SegNet` (+0,032) in modo significativo, su `PSPNet` non produce effetti distinguibili perché quella architettura era già spostata verso la precisione. Da rifare su questa base: ablazione SRL, e la griglia sulle loss | Fatto |
 
