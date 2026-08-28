@@ -2024,7 +2024,7 @@ verifica l'ipotesi al costo di una run.
 *Stato:* il confronto è per ora limitato a `UNet` e a un solo seed per loss.
 `SegNet` e `PSPNet` completano la griglia.
 
-### I pesi di classe peggiorano il modello
+### I pesi di classe danneggiano due architetture su tre
 
 La sonda sulla Focal senza pesi ha prodotto un risultato inatteso — precisione
 in forte crescita, recall in calo, IoU media la migliore fino a quel momento —
@@ -2068,13 +2068,70 @@ sono approssimati. Con una correzione di Bonferroni su otto confronti
 `Cordon` no. La direzione è però concorde su tutte le metriche di area e le
 dimensioni dell'effetto sono grandi. Il risultato è su `UNet` soltanto.
 
-*Conseguenze.* La configurazione di riferimento del progetto va rimessa in
-discussione: le otto run precedenti usano una baseline che questi dati indicano
-come subottimale. L'ablazione della sezione 7.6 va eseguita sulla baseline non
-pesata, o misurerebbe l'effetto della Skeleton Recall Loss su un modello mal
-configurato. E la questione 7 si riapre: se i pesi non migliorano la IoU di
-`Node`, e `Node` resta la classe peggiore e più rumorosa, escluderla con
-`LABELS_TO_IGNORE` diventa più difendibile.
+### La replica sulle altre due architetture: l'effetto non è universale
+
+Il risultato è stato replicato su `SegNet` e `PSPNet`, un seed per braccio,
+tutto il resto invariato. Le soglie sono quelle misurate su `UNet`.
+
+| metrica | `UNet` (n=3) | `SegNet` | `PSPNet` | soglia |
+|---|---|---|---|---|
+| IoU media | **+0,0232** | **+0,0320** | −0,0122 | 0,0214 |
+| precisione | **+0,0781** | **+0,0813** | **+0,0333** | 0,0145 |
+| recall | **−0,0588** | **−0,0472** | **−0,0541** | 0,0184 |
+| clDice | +0,0091 | +0,0103 | **−0,0172** | 0,0149 |
+| IoU `Cane` | **+0,0314** | **+0,0332** | −0,0027 | 0,0220 |
+| IoU `Cordon` | **+0,0249** | **+0,0255** | −0,0065 | 0,0208 |
+| IoU `Node` | −0,0200 | +0,0295 | **−0,0494** | 0,0494 |
+| IoU `Other` | **+0,0563** | **+0,0397** | **+0,0097** | 0,0050 |
+
+`SegNet` replica `UNet` quasi punto per punto — precisione, `Cane`, `Cordon` e
+clDice cadono entro un punto percentuale dell'effetto misurato con tre seed.
+**`PSPNet` no.** La sua IoU media non migliora (−0,0122, entro il rumore),
+`Cane` e `Cordon` restano invariate, e clDice e `Node` peggiorano.
+
+*Perché.* Il divario recall−precisione di partenza distingue le architetture:
+
+| | pesata | senza pesi |
+|---|---|---|
+| `UNet` | +0,099 | −0,038 |
+| `SegNet` | +0,096 | −0,033 |
+| `PSPNet` | **+0,058** | −0,030 |
+
+Tutte e tre finiscono nello stesso punto, ma `PSPNet` partiva **già a metà
+strada**: è l'architettura senza convoluzioni a piena risoluzione, produce
+maschere più grossolane e quindi meno falsi positivi, ed è intrinsecamente
+spostata verso la precisione (sezione 12, dove perde 0,057 di IoU su `Cane`).
+I pesi di classe ne stavano **compensando la distorsione nativa**; toglierli la
+porta oltre l'ottimo. Lo stesso intervento è un guadagno per due architetture e
+un pareggio per la terza, a seconda di dove ciascuna parte.
+
+*Un effetto collaterale sul confronto fra architetture.* La conclusione della
+sezione 12 dipende dalla baseline:
+
+| | pesata | senza pesi |
+|---|---|---|
+| `SegNet` vs `UNet` | +0,0054 (indist.) | +0,0142 (indist.) |
+| `PSPNet` vs `UNet` | −0,0044 (indist.) | **−0,0399 (distinguibile)** |
+
+Sulla baseline pesata le tre architetture sono indistinguibili; su quella non
+pesata **`PSPNet` resta indietro in modo misurabile**. Va detto esplicitamente:
+la classifica fra architetture non è una proprietà dei soli modelli, dipende
+dalla configurazione su cui li si confronta.
+
+*Conseguenze.* Si adotta la **baseline non pesata** come configurazione di
+riferimento: migliora due architetture su tre in modo significativo e sulla
+terza non peggiora in modo distinguibile. Le run precedenti restano valide come
+braccio «pesato» del confronto, non come baseline. L'ablazione della sezione 7.6
+va eseguita sulla nuova base, o misurerebbe l'effetto della Skeleton Recall Loss
+su un modello mal configurato.
+
+La questione 7 si irrigidisce. Su `UNet` i pesi peggiorano `Node` di 0,020, su
+`SegNet` lo migliorano di 0,030, su `PSPNet` lo migliorano di 0,049: variazioni
+tutte al limite o dentro la soglia di quella classe, e **di segno discorde**. La
+lettura corretta non è che i pesi aiutino o danneggino `Node`, ma che **`Node` è
+sostanzialmente indifferente**, mentre le altre tre classi ne sono danneggiate
+in modo consistente su due architetture su tre. Il meccanismo che doveva
+proteggere la classe rara non la protegge.
 
 ### Limite dichiarato di questo confronto
 
@@ -2115,7 +2172,7 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss, per verificare la previsione della sezione 7.6 | Esperimenti definitivi |
 | 13 | Criterio di ordinamento della tabella comparativa — sezione 7.5. La scelta di `MONITOR_METRIC` è invece **chiusa**: la sonda a 200 epoche mostra che la val loss tocca il minimo 65 epoche prima del massimo della IoU, e fermarsi su di essa costerebbe 0,048 di IoU | Prima della tabella finale |
-| 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. Misurato su `UNet` a tre seed: togliere `sqrt_inverse` migliora IoU media, `Cane`, `Cordon` e `Other`, inverte il divario recall−precisione e non peggiora `Node` in modo significativo. Da confermare su `SegNet` e `PSPNet` prima di adottarla come baseline della campagna | Prossima sessione |
+| 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. **Risolta:** adottata. Migliora `UNet` (+0,023, n=3) e `SegNet` (+0,032) in modo significativo, su `PSPNet` non produce effetti distinguibili perché quella architettura era già spostata verso la precisione. Da rifare su questa base: ablazione SRL, e la griglia sulle loss | Fatto |
 
 ---
 
