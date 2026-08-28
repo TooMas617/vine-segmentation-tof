@@ -246,20 +246,40 @@ the notebooks copy the project to `/content` and `sync_results_to_drive()` must
 be called before a session ends. Epoch time 38 s at batch 4, peak memory
 1.25 GB (PSPNet) to 5.32 GB (SegNet) of the 15.64 GB available.
 
-Next: **run the experiments on Colab.** Three architectures at matched
-capacity, plus the ablation with and without the skeleton recall loss — six
-runs, roughly 4.5 hours. Set `config.ARCHITECTURE` and
-`config.SKELETON_LOSS_CONFIG["enabled"]` from a notebook cell rather than by
-editing `config.py`: `build_config()` deep-copies at call time, so the run's
-`config.json` records the override, and nothing has to be re-copied to
-`/content`. Run the three baselines first, so an interrupted session still
-leaves a complete architecture comparison. Nothing further needs writing.
+**The campaign is under way: 18 runs done**, all at `splits_hash` `62de0ec4`,
+budget 70 epochs, batch 4, on a Colab T4. Configure each run from the notebook
+cell 0.2 — never by editing `config.py` — since `build_config()` deep-copies at
+call time, so `config.json` records the override and nothing needs re-copying
+to `/content`. Cell 0.3 prints the full run identity; read it before starting.
 
-The experiments must include an **ablation with and without the skeleton
-recall loss**. Theory predicts it trades precision for recall, and the model
-already over-segments canes, so report precision and recall per class: mean
-IoU alone would hide the effect, and clDice is blind to radius inflation by
-design. Section 7.6 of the notes states the prediction to test.
+Results are in sections 12 and 7.7 of `docs/pipeline_notes.md`. Four findings
+drive everything downstream:
+
+- **The noise floor is measured**: test IoU σ = 0.0076 over three identical
+  runs, so two single runs differing by less than ~0.02 are indistinguishable.
+  `Node` is far worse (σ = 0.0175), `Other` far better (σ = 0.0018).
+- **The 70-epoch budget stands.** A 200-epoch probe stopped itself at 135; the
+  best checkpoint within 70 captures 98.1 % of the converged IoU, a shortfall
+  below the noise. Not convergence — a declared budget.
+- **Class weights are off.** `sqrt_inverse` weighting costs 0.023 IoU on UNet
+  (n = 3, p = 0.02) and 0.032 on SegNet, without helping `Node` at all. The
+  macro-averaged metric already balances the classes; the weights balance them
+  a second time. `PSPNet` is the exception — it was already precision-shifted,
+  so it gains nothing. **The unweighted baseline is the reference.**
+- **The skeleton recall loss is a net cost here.** It does what it claims on
+  the centreline — topological recall +0.026, precision −0.030, both p < 0.01 —
+  but mean IoU falls 0.043 (p = 0.003) with no compensating gain on area.
+
+Still to run: two more seeds each for `SegNet` and `PSPNet` on the unweighted
+baseline (the architecture comparison rests on n = 1 for both), the confidence
+ablation via `config.set_enabled_modalities(confidence=False)`, and the
+optimiser/scheduler probes. The loss comparison is low priority: on the
+unweighted baseline `ce`, `combined` and `focal` are indistinguishable.
+
+The skeleton-recall ablation is **done** — section 7.7. When reporting it, keep
+the area metrics separate from the topological ones: the whole finding is that
+the two move in opposite directions. Mean IoU alone would hide it, and clDice
+is blind to radius inflation by design.
 
 Open points are tracked at the end of `docs/pipeline_notes.md`. The most
 consequential is whether to drop the `Node` class: measurements are in section 5
