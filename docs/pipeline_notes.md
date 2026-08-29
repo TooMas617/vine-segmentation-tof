@@ -2198,13 +2198,59 @@ sostanzialmente indifferente**, mentre le altre tre classi ne sono danneggiate
 in modo consistente su due architetture su tre. Il meccanismo che doveva
 proteggere la classe rara non la protegge.
 
-### Limite dichiarato di questo confronto
+### Confronto definitivo fra architetture — baseline non pesata, 3 seed ciascuna
 
-`SegNet` e `PSPNet` hanno **una sola run ciascuna**: le differenze sono valutate
-contro la σ misurata su `UNet`, assumendo che la dispersione sia comparabile fra
-architetture. È un'assunzione, non una misura. Per l'affermazione finale
-servono tre seed anche per loro — sei run, da eseguire una volta fissato il
-budget e non prima.
+Diciotto run in tutto (tre architetture × tre seed × due bracci di pesatura),
+`ce`, budget 70, batch 4, split `62de0ec4`, impronta `d90d5da1`. Questa è la
+tabella che va in tesi.
+
+| metrica | `UNet` | `SegNet` | `PSPNet` |
+|---|---|---|---|
+| IoU media | 0,6674 ± 0,0075 | **0,6820 ± 0,0019** | 0,6343 ± 0,0075 |
+| precisione | 0,8500 ± 0,0132 | 0,8615 ± 0,0039 | 0,8381 ± 0,0145 |
+| recall | 0,8120 ± 0,0030 | 0,8216 ± 0,0034 | 0,7891 ± 0,0048 |
+| clDice | 0,9087 ± 0,0056 | 0,9076 ± 0,0017 | 0,8664 ± 0,0061 |
+| IoU `Cane` | 0,7481 ± 0,0067 | 0,7496 ± 0,0025 | 0,6628 ± 0,0114 |
+| IoU `Cordon` | 0,8009 ± 0,0068 | 0,8035 ± 0,0028 | 0,7857 ± 0,0044 |
+| IoU `Node` | 0,4356 ± 0,0147 | **0,4826 ± 0,0031** | 0,4210 ± 0,0057 |
+| IoU `Other` | 0,6849 ± 0,0070 | 0,6924 ± 0,0024 | 0,6678 ± 0,0131 |
+| s/epoca | 32,7 | **52,7** | 29,4 |
+
+Test t di Welch contro `UNet`:
+
+| | differenza | p |
+|---|---|---|
+| `SegNet` IoU media | +0,0146 | 0,069 |
+| `SegNet` recall | +0,0096 | 0,022 |
+| `SegNet` IoU `Node` | +0,0470 | 0,027 |
+| `PSPNet` IoU media | −0,0331 | **0,006** |
+| `PSPNet` clDice | −0,0423 | **0,001** |
+| `PSPNet` IoU `Cane` | **−0,0853** | **0,001** |
+| `PSPNet` recall | −0,0229 | **0,004** |
+
+**`PSPNet` è nettamente ultima**, e non per un margine ambiguo: perde 0,085 di
+IoU su `Cane` con p = 0,001 e 0,042 di clDice con p = 0,0009. Sono i due valori
+p più bassi della tabella, ed entrambi riguardano le strutture sottili. La
+spiegazione è quella già data: nessuna convoluzione a piena risoluzione, quindi
+i tralci non sopravvivono all'upsample finale. Anche contro `SegNet` il distacco
+è netto (+0,048 di IoU, p = 0,006).
+
+**`SegNet` è nominalmente prima ma non in modo conclusivo**: +0,0146 su `UNet`
+con p = 0,069, sopra la soglia convenzionale del 5 %. Guadagna in modo
+significativo su recall e su `Node`, ma la IoU media resta un'indicazione, non
+un risultato. **E costa il 61 % di tempo per epoca in più.** Con questi numeri,
+`UNet` resta la scelta ragionevole di default e `SegNet` un'alternativa
+difendibile solo se il tempo di addestramento non è un vincolo.
+
+*Nota su `SegNet`.* La sua dispersione fra seed è notevolmente più bassa delle
+altre — σ = 0,0019 sulla IoU contro 0,0075 di `UNet` e `PSPNet`, quattro volte
+meno. Non abbiamo una spiegazione misurata; va riportato come osservazione.
+
+*Convalida del metodo.* Le stime provvisorie ricavate con una sola run per
+architettura davano `PSPNet` a −0,0399 e `SegNet` a +0,0142 contro `UNet`; con
+tre seed diventano −0,0331 e +0,0146. Usare la σ di `UNet` come metro per run
+singole si è dimostrato affidabile, il che dà fiducia alle altre affermazioni
+costruite allo stesso modo in attesa di replica.
 
 ---
 
