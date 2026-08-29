@@ -1425,10 +1425,42 @@ modello», ma **la SRL aiuta l'architettura che ne ha bisogno e danneggia quelle
 che non ne hanno**. La previsione era stata formulata prima di eseguire le due
 sonde, sulla base del deficit di `Cane` di `PSPNet` misurato in sezione 12.
 
-*Stato:* le due repliche sono a **un solo seed**. Quella su `SegNet` corrobora
-un effetto già stabilito a tre seed su `UNet` e può restare così; quella su
-`PSPNet` sostiene invece l'affermazione più forte dell'intera ablazione e va
-portata a tre seed.
+### La dicotomia, misurata: `PSPNet` a tre seed
+
+La replica su `PSPNet` è stata portata a tre seed per braccio. Test t di Welch:
+
+| metrica | senza SRL | con SRL | differenza | p |
+|---|---|---|---|---|
+| IoU media | 0,6343 ± 0,0075 | 0,6240 ± 0,0016 | −0,0103 | 0,134 |
+| recall | 0,7891 ± 0,0048 | 0,7881 ± 0,0065 | −0,0010 | 0,838 |
+| IoU `Cane` | 0,6628 ± 0,0114 | 0,6733 ± 0,0023 | +0,0104 | 0,250 |
+| IoU `Node` | 0,4210 ± 0,0057 | 0,3805 ± 0,0089 | **−0,0405** | **0,005** |
+| clDice | 0,8664 ± 0,0061 | **0,8866 ± 0,0007** | **+0,0202** | **0,027** |
+| top. recall `Cane` | 0,8271 ± 0,0264 | **0,9253 ± 0,0049** | **+0,0983** | **0,020** |
+| top. precision `Cane` | 0,8823 ± 0,0042 | 0,8520 ± 0,0006 | **−0,0304** | **0,005** |
+
+**Il contrasto con `UNet` è netto e ora statistico.** Su `UNet` la SRL fa
+scendere la mean IoU di 0,043 con p = 0,003; su `PSPNet` la variazione è −0,010
+con p = 0,13, cioè **non distinguibile da zero**. E su `PSPNet` il clDice
+**migliora in modo significativo** (+0,020, p = 0,027), mentre su `UNet` non si
+muoveva.
+
+La formulazione difendibile è quindi:
+
+> La Skeleton Recall Loss impone un costo costante in precisione della linea
+> centrale (−0,030 su tutte e tre le architetture) e restituisce recall
+> topologico in proporzione al deficit di partenza. Dove le centreline sono già
+> ben ricostruite lo scambio è una perdita netta sulle metriche di area; dove
+> sono spezzate è **neutro sull'area e positivo sulla topologia**.
+
+*Il costo che non dipende dall'architettura.* `Node` peggiora ovunque, e su
+`PSPNet` in modo significativo (−0,041, p = 0,005). È il prezzo strutturale
+descritto sopra: i nodi giacciono sul cordone e vengono assorbiti dalla spinta
+lungo la sua linea centrale, indipendentemente da quanto bene l'architettura
+ricostruisca le centreline.
+
+*Stato:* `UNet` e `PSPNet` a tre seed per braccio, `SegNet` a uno. Quest'ultima
+corrobora un effetto già stabilito e può restare così.
 
 `Node` peggiora su tutte e tre (−0,099, −0,055, −0,044), coerente con
 l'assorbimento lungo il cordone descritto sopra.
