@@ -1391,6 +1391,48 @@ la linea centrale del cordone assorbe i nodi che le stanno sopra. La SRL rende
 inoltre `Node` molto più instabile: σ passa da 0,015 a 0,058, quasi quattro
 volte, ed è per questo che una differenza di quasi dieci punti resta a p = 0,09.
 
+### 7.8 L'effetto dipende da quanto ce n'è bisogno
+
+L'ablazione è stata replicata su `SegNet` e `PSPNet`, una run per architettura,
+contro le rispettive baseline a tre seed. Le soglie sono `2σ√2` calcolate sulla
+baseline di ciascuna architettura.
+
+| effetto della SRL | `UNet` (n=3) | `SegNet` | `PSPNet` |
+|---|---|---|---|
+| IoU media | **−0,0431** | **−0,0293** | −0,0120 |
+| IoU `Cane` | −0,0122 | **−0,0168** | **+0,0117** |
+| IoU `Cordon` | −0,0146 | **−0,0164** | +0,0035 |
+| IoU `Node` | **−0,0986** | **−0,0549** | **−0,0444** |
+| clDice | −0,0075 | **−0,0057** | **+0,0205** |
+| top. **recall** `Cane` | **+0,0257** | **+0,0256** | **+0,0999** |
+| top. **precision** `Cane` | **−0,0298** | **−0,0325** | **−0,0309** |
+
+**La precisione topologica scende della stessa quantità su tutte e tre**:
+−0,030, −0,033, −0,031. È il **prezzo fisso** che la loss impone, indipendente
+dall'architettura. Il recall topologico invece cresce **in proporzione a quanto
+ne mancava**: +0,026 su `UNet` e `SegNet`, che partivano da 0,921 e 0,931, e
+**+0,100 su `PSPNet`**, che partiva da 0,827.
+
+*Formulazione del risultato.* La Skeleton Recall Loss paga un costo costante in
+precisione della linea centrale e restituisce recall proporzionale al deficit di
+partenza. Dove le centreline sono già ricostruite bene lo scambio è in perdita
+netta; dove sono spezzate — `PSPNet`, l'architettura senza convoluzioni a piena
+risoluzione — è **in pareggio sull'area e in guadagno sulla topologia**: IoU
+`Cane` +0,012, clDice +0,021 oltre soglia, IoU media −0,012 dentro il rumore.
+
+Questo qualifica la conclusione della sezione 7.7. Non «la SRL peggiora il
+modello», ma **la SRL aiuta l'architettura che ne ha bisogno e danneggia quelle
+che non ne hanno**. La previsione era stata formulata prima di eseguire le due
+sonde, sulla base del deficit di `Cane` di `PSPNet` misurato in sezione 12.
+
+*Stato:* le due repliche sono a **un solo seed**. Quella su `SegNet` corrobora
+un effetto già stabilito a tre seed su `UNet` e può restare così; quella su
+`PSPNet` sostiene invece l'affermazione più forte dell'intera ablazione e va
+portata a tre seed.
+
+`Node` peggiora su tutte e tre (−0,099, −0,055, −0,044), coerente con
+l'assorbimento lungo il cordone descritto sopra.
+
 *Sulla critica di Arora et al.* La sezione 7.4 aveva stabilito che l'obiezione
 sul gradiente costante non regge a livello dei logit, ma che l'asimmetria
 recall/precisione della loss è reale. Questi dati confermano l'asimmetria e ne
@@ -2086,8 +2128,23 @@ configurazione che gli autori abbiano testato, ed è la spiegazione più natural
 del risultato. Una run sonda con `apply_weights = False` sulla sola Focal
 verifica l'ipotesi al costo di una run.
 
-*Stato:* il confronto è per ora limitato a `UNet` e a un solo seed per loss.
-`SegNet` e `PSPNet` completano la griglia.
+*Copertura della dimensione loss — limite dichiarato.* Il confronto è su
+**`UNet` soltanto**, e a un solo seed per loss diversa da `ce`. `combined` e
+`focal` non sono mai state eseguite su `SegNet` né su `PSPNet`: dato che il
+fattore loss risulta inerte su `UNet`, quelle quattro run sono state
+deprioritizzate a favore di misure che producevano informazione nuova. Va
+riportato come scelta, non taciuto.
+
+**`dice` da sola non è mai stata eseguita**, su nessuna architettura e su
+nessuna delle due baseline, pur essendo un valore ammesso di
+`LOSS_CONFIG["type"]`. È l'unica opzione della configurazione rimasta non
+provata, ed è anche la più interessante fra quelle mancanti: `ce`, `combined` e
+`focal` condividono tutte un termine di cross-entropy per pixel, mentre la Dice
+pura è **puramente regionale**. È inoltre l'obiettivo più vicino alla metrica
+monitorata — `mean_iou_no_bg` è una media macro per classe, e una Dice per
+classe mediata allo stesso modo la approssima direttamente. Alla luce del
+risultato sui pesi di classe, dove il disallineamento fra obiettivo e metrica
+era la spiegazione, provarla è una verifica coerente e non un riempimento.
 
 ### I pesi di classe danneggiano due architetture su tre
 
