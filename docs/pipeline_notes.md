@@ -2384,6 +2384,63 @@ costruite allo stesso modo in attesa di replica.
 
 ---
 
+## 13. Il canale di confidence non porta informazione utile
+
+Tre run, una per architettura, con `config.set_enabled_modalities(confidence=False)`
+e tutto il resto invariato: `ce`, senza pesi, seed 42, budget 70, split
+`62de0ec4`, impronta `d90d5da1`. Il riferimento è la baseline a cinque canali a
+tre seed di ciascuna architettura; le soglie sono `2σ√2` sulla rispettiva σ.
+
+| differenza 4 canali − 5 canali | `UNet` | `SegNet` | `PSPNet` |
+|---|---|---|---|
+| IoU media | +0,0013 | −0,0008 | +0,0005 |
+| precisione | +0,0030 | +0,0030 | −0,0117 |
+| recall | +0,0003 | −0,0029 | +0,0083 |
+| clDice | −0,0047 | −0,0006 | +0,0021 |
+| IoU `Cane` | +0,0038 | +0,0006 | +0,0016 |
+| IoU `Cordon` | −0,0080 | −0,0019 | −0,0023 |
+| IoU `Node` | +0,0241 | −0,0056 | +0,0063 |
+| IoU `Other` | −0,0147 | +0,0037 | −0,0038 |
+
+**Zero differenze oltre soglia su ventiquattro confronti.** Sulla metrica
+principale lo scarto è di +0,0013, −0,0008 e +0,0005: un sedicesimo della
+soglia di rumore nel caso peggiore. Non è «una perdita accettabile», è
+**indistinguibile in entrambe le direzioni su tutte e tre le architetture**.
+
+E costa meno:
+
+| | 5 canali | 4 canali | |
+|---|---|---|---|
+| `UNet` | 32,7 s/epoca | 30,1 | −8 % |
+| `SegNet` | 52,7 | 46,1 | −12 % |
+| `PSPNet` | 29,4 | 26,1 | −11 % |
+
+*Verifica della provenienza.* Oltre a `use_confidence: false` e
+`input_channels: 4`, il conteggio dei parametri scende di **288, 576 e 432**
+rispettivamente — cioè esattamente `base_channels × 3 × 3` per ciascuna
+architettura, un canale di input in meno nella prima convoluzione. Il modello è
+stato costruito a quattro canali, non solo configurato: è un controllo
+indipendente dal campo dichiarativo.
+
+*Interpretazione.* Il canale di confidence della camera ToF misura
+l'affidabilità della stima di profondità, quindi è in larga parte una funzione
+della profondità stessa e della riflettività della superficie — informazione già
+presente nei tre canali di depth colorizzata e nell'intensità. L'ipotesi di
+ridondanza era stata formulata all'inizio del progetto; i dati la confermano.
+
+*Ricaduta pratica.* Un canale in meno da acquisire, trasmettere e archiviare, e
+un addestramento dall'8 al 12 % più rapido, a parità di risultato su ogni
+metrica e su ogni architettura. Nota però che questo riguarda **l'uso del
+canale come ingresso della rete**: non dice nulla sulla sua utilità per
+scartare pixel inaffidabili a monte, uso che questo progetto non esplora.
+
+*Limite.* Una run per architettura, valutata contro la σ della rispettiva
+baseline a tre seed. L'accordo fra le tre architetture — otto metriche ciascuna,
+tutte entro soglia — rende improbabile che si tratti di un caso, ma resta una
+replica singola per architettura.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
@@ -2409,9 +2466,10 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 
 | # | Questione | Quando |
 |---|---|---|
-| 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` — misure in sezione 5 | Solo se i risultati la giustificassero |
+| 7 | Eliminazione della classe `Node` via `LABELS_TO_IGNORE` | **Documentata, non eseguita.** La campagna ha accumulato prove a favore: `Node` è la classe più instabile (σ = 0,0175 contro 0,0018 di `Other`), i pesi di classe non la migliorano e il loro effetto ha segno discorde fra architetture, la Skeleton Recall Loss la peggiora significativamente su tutte e tre, e la sua IoU resta ~0,44 contro 0,75 e 0,80 di `Cane` e `Cordon`. Escluderla cambierebbe però `NUM_CLASSES` e quindi la metrica macro, rendendo incomparabili tutte le run: è lavoro futuro, non una modifica eseguibile ora | Lavoro futuro |
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss | **Risolta:** 3 seed per braccio, sezione 7.7. La previsione della 7.6 è corretta sul meccanismo ma sbagliata sul piano: lo scambio precisione↔recall avviene sulle metriche topologiche (p < 0,01), mentre sull'area il saldo è un peggioramento uniforme (IoU −0,043, p = 0,003) |
+| 15 | **Ridondanza del canale di confidence** | **Risolta:** sezione 13. Toglierlo non produce differenze oltre soglia su nessuna delle tre architetture — zero su ventiquattro confronti — e riduce il tempo per epoca dell'8-12 % | Fatto |
 | 13 | Criterio di ordinamento della tabella comparativa — sezione 7.5. La scelta di `MONITOR_METRIC` è invece **chiusa**: la sonda a 200 epoche mostra che la val loss tocca il minimo 65 epoche prima del massimo della IoU, e fermarsi su di essa costerebbe 0,048 di IoU | Prima della tabella finale |
 | 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. **Risolta:** adottata. Migliora `UNet` (+0,023, n=3) e `SegNet` (+0,032) in modo significativo, su `PSPNet` non produce effetti distinguibili perché quella architettura era già spostata verso la precisione. Da rifare su questa base: ablazione SRL, e la griglia sulle loss | Fatto |
 

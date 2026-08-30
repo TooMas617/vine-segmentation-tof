@@ -270,11 +270,16 @@ drive everything downstream:
   the centreline — topological recall +0.026, precision −0.030, both p < 0.01 —
   but mean IoU falls 0.043 (p = 0.003) with no compensating gain on area.
 
-Still to run: two more seeds each for `SegNet` and `PSPNet` on the unweighted
-baseline (the architecture comparison rests on n = 1 for both), the confidence
-ablation via `config.set_enabled_modalities(confidence=False)`, and the
-optimiser/scheduler probes. The loss comparison is low priority: on the
-unweighted baseline `ce`, `combined` and `focal` are indistinguishable.
+Two further results close the campaign. The **architecture comparison** is
+settled at three seeds each: `SegNet` 0.6820, `UNet` 0.6674, `PSPNet` 0.6343 —
+`PSPNet` measurably last (p = 0.006, and −0.085 on `Cane`), `SegNet` ahead of
+`UNet` only at p = 0.069 while costing 61 % more per epoch, so `UNet` stays the
+sensible default. And the **confidence channel carries no useful information**:
+dropping it moves nothing beyond noise on any of the three architectures —
+zero of twenty-four comparisons — while cutting 8-12 % off the epoch time.
+
+Only the optimiser and scheduler probes remain, and no conclusion depends on
+them. From here the constraint is the writing, not the GPU.
 
 The skeleton-recall ablation is **done** — section 7.7. When reporting it, keep
 the area metrics separate from the topological ones: the whole finding is that
