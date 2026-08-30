@@ -2167,16 +2167,57 @@ fattore loss risulta inerte su `UNet`, quelle quattro run sono state
 deprioritizzate a favore di misure che producevano informazione nuova. Va
 riportato come scelta, non taciuto.
 
-**`dice` da sola non è mai stata eseguita**, su nessuna architettura e su
-nessuna delle due baseline, pur essendo un valore ammesso di
-`LOSS_CONFIG["type"]`. È l'unica opzione della configurazione rimasta non
-provata, ed è anche la più interessante fra quelle mancanti: `ce`, `combined` e
-`focal` condividono tutte un termine di cross-entropy per pixel, mentre la Dice
-pura è **puramente regionale**. È inoltre l'obiettivo più vicino alla metrica
-monitorata — `mean_iou_no_bg` è una media macro per classe, e una Dice per
-classe mediata allo stesso modo la approssima direttamente. Alla luce del
-risultato sui pesi di classe, dove il disallineamento fra obiettivo e metrica
-era la spiegazione, provarla è una verifica coerente e non un riempimento.
+### La Dice pura: l'ipotesi dell'allineamento è smentita
+
+`dice` era l'unica opzione di `LOSS_CONFIG["type"]` mai eseguita, ed era stata
+messa in coda con un'aspettativa precisa: è l'unica loss **puramente regionale**
+del gruppo — `ce`, `combined` e `focal` condividono tutte un termine di
+cross-entropy per pixel — ed è l'obiettivo più vicino alla metrica monitorata,
+dato che `mean_iou_no_bg` è una media macro per classe e una Dice per classe
+mediata allo stesso modo la approssima direttamente. Visto che il disallineamento
+fra obiettivo e metrica era la spiegazione del risultato sui pesi di classe, ci
+si attendeva che allinearli ulteriormente aiutasse.
+
+**Non aiuta: è la peggiore delle quattro.** `UNet`, senza pesi, seed 42.
+
+| metrica | `ce` (n=3) | `dice` | differenza | soglia |
+|---|---|---|---|---|
+| IoU media | 0,6674 ± 0,0075 | 0,6369 | **−0,0305** | 0,0212 |
+| recall | 0,8120 ± 0,0030 | 0,7955 | **−0,0166** | 0,0085 |
+| clDice | 0,9087 ± 0,0056 | 0,8877 | **−0,0210** | 0,0159 |
+| IoU `Cane` | 0,7481 ± 0,0067 | 0,7095 | **−0,0386** | 0,0190 |
+| IoU `Cordon` | 0,8009 ± 0,0068 | 0,7627 | **−0,0383** | 0,0192 |
+| IoU `Other` | 0,6849 ± 0,0070 | 0,6527 | **−0,0323** | 0,0198 |
+
+Classifica finale delle quattro loss su `UNet` senza pesi:
+`combined` 0,6698 ≈ `ce` 0,6674 > `focal` 0,6585 > **`dice` 0,6369**.
+
+*Non è un problema di budget né di instabilità.* La Dice pura era stata messa
+sotto osservazione per il rischio di partenza piatta — nessun segnale per pixel
+con predizioni quasi uniformi. Non si è verificato: la loss scende regolarmente
+dall'epoca 1. E la pendenza delle ultime dieci epoche è **+0,63 ×10⁻³**, sotto
+l'inviluppo di `ce` (+1,3 … +2,9): aveva già spianato, quindi ha convergito a
+una soluzione peggiore, non è stata troncata.
+
+*Dove perde, e perché è coerente.* Le due perdite maggiori sono su `Cane`
+(−0,039) e `Cordon` (−0,038), cioè **sulle due strutture sottili**. È la lettura
+naturale: la Dice misura sovrapposizione di regioni e fornisce gradiente debole
+e rumoroso dove i pixel della classe sono pochi, mentre la cross-entropy dà
+supervisione densa per pixel. Togliere il termine per pixel costa esattamente
+dove le strutture sono più sottili.
+
+L'ipotesi dell'allineamento obiettivo-metrica era quindi sbagliata come
+previsione: avvicinare la loss alla metrica non basta se la forma del gradiente
+che ne risulta è inadatta al problema. Resta valida come spiegazione del
+risultato sui pesi di classe, che riguardava una **doppia** correzione dello
+stesso sbilanciamento, non la forma dell'obiettivo.
+
+*Copertura della dimensione loss — limite dichiarato.* Il confronto fra le
+quattro loss è su **`UNet` soltanto**, e a un solo seed per quelle diverse da
+`ce`. `combined`, `focal` e `dice` non sono mai state eseguite su `SegNet` né su
+`PSPNet`: dato che il fattore loss risulta inerte fra le prime tre su `UNet`,
+quelle run sono state deprioritizzate a favore di misure che producevano
+informazione nuova. È una scelta, e va riportata come tale.
 
 ### I pesi di classe danneggiano due architetture su tre
 
