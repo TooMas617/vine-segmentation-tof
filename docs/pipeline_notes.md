@@ -2441,6 +2441,48 @@ replica singola per architettura.
 
 ---
 
+## 14. Sonda su optimizer: SGD al learning rate di default
+
+L'intera campagna usa AdamW a `lr = 1e-4`, scelto all'inizio e mai messo alla
+prova. La sonda non è un confronto tarato fra optimizer — sarebbe servita una
+ricerca sul learning rate — ma serve a non dover rispondere «non abbiamo
+guardato».
+
+*Primo tentativo, scartato.* Una run SGD a 70 epoche non era arrivata a
+convergenza: pendenza di fine training **+3,38 ×10⁻³**, sopra l'inviluppo
+misurato per AdamW (+1,3 … +2,9), con il massimo raggiunto all'ultima epoca.
+È il **primo caso in cui il criterio della sezione 12 scatta**: non era mai
+servito per le architetture, e serve qui. Confrontare a 70 epoche avrebbe
+misurato la velocità di convergenza, non la qualità finale.
+
+*Run valida.* SGD `lr = 1e-2`, momentum 0,9, `NUM_EPOCHS = 200` con early
+stopping libero. Si è fermata **all'epoca 164**, massimo alla **144**.
+
+| | val IoU |
+|---|---|
+| SGD, best entro l'epoca 70 | 0,5947 |
+| SGD a convergenza (ep. 144) | **0,6200** |
+| AdamW, best entro 70 (media 3 seed) | 0,6674 |
+| AdamW a convergenza (stimato, +0,0124 dalla sonda della sezione 12) | **0,6798** |
+| **differenza** | **−0,0598** |
+
+**SGD al learning rate di default è peggiore di quasi tre volte la soglia di
+rumore**, e impiega 144 epoche contro le 115 di AdamW. Il confronto è ora fra
+due modelli entrambi convergiti, quindi interpretabile.
+
+*Limite dichiarato.* `lr = 1e-2` è il valore di riferimento della letteratura,
+non un valore tarato su questo problema. L'affermazione difendibile è «SGD al
+learning rate di default fa peggio di AdamW a 1e-4», non «AdamW è migliore di
+SGD». Tararlo richiederebbe una ricerca che non cambierebbe alcuna conclusione
+della tesi, dato che ogni confronto è relativo e interno a un optimizer fisso.
+
+*Una replica involontaria.* Il primo tentativo era girato per errore a quattro
+canali, con `best entro 70 = 0,5945`; la run valida, a cinque canali, dà
+**0,5947**. Due parti su diecimila. Non era programmata, ed è una conferma
+ulteriore e non cercata del risultato della sezione 13.
+
+---
+
 ## Riepilogo delle questioni aperte
 
 ### Risolte
@@ -2470,6 +2512,7 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 | 11 | Scelta del peso della Skeleton Recall Loss, tenuto conto della diversa scala della loss principale — sezione 7.3 | Notebook 03 |
 | 12 | Ablazione con e senza Skeleton Recall Loss | **Risolta:** 3 seed per braccio, sezione 7.7. La previsione della 7.6 è corretta sul meccanismo ma sbagliata sul piano: lo scambio precisione↔recall avviene sulle metriche topologiche (p < 0,01), mentre sull'area il saldo è un peggioramento uniforme (IoU −0,043, p = 0,003) |
 | 15 | **Ridondanza del canale di confidence** | **Risolta:** sezione 13. Toglierlo non produce differenze oltre soglia su nessuna delle tre architetture — zero su ventiquattro confronti — e riduce il tempo per epoca dell'8-12 % | Fatto |
+| 16 | **Sonda su optimizer** | **Risolta:** sezione 14. SGD al learning rate di default converge a 0,6200 contro ~0,6798 di AdamW, peggiore di quasi tre volte la soglia di rumore. Resta da fare la sola sonda sullo scheduler cosine | Fatto |
 | 13 | Criterio di ordinamento della tabella comparativa — sezione 7.5. La scelta di `MONITOR_METRIC` è invece **chiusa**: la sonda a 200 epoche mostra che la val loss tocca il minimo 65 epoche prima del massimo della IoU, e fermarsi su di essa costerebbe 0,048 di IoU | Prima della tabella finale |
 | 14 | **Configurazione di riferimento senza pesi di classe** — sezione 12. **Risolta:** adottata. Migliora `UNet` (+0,023, n=3) e `SegNet` (+0,032) in modo significativo, su `PSPNet` non produce effetti distinguibili perché quella architettura era già spostata verso la precisione. Da rifare su questa base: ablazione SRL, e la griglia sulle loss | Fatto |
 

@@ -278,8 +278,13 @@ sensible default. And the **confidence channel carries no useful information**:
 dropping it moves nothing beyond noise on any of the three architectures —
 zero of twenty-four comparisons — while cutting 8-12 % off the epoch time.
 
-Only the optimiser and scheduler probes remain, and no conclusion depends on
-them. From here the constraint is the writing, not the GPU.
+The **optimiser probe** is done too: SGD at the literature default (1e-2,
+momentum 0.9) converges at epoch 144 to 0.6200 against AdamW's ~0.6798, worse
+by nearly three times the noise threshold. Its learning rate was not tuned, so
+the claim is about SGD at that setting, not about SGD. Only the cosine
+scheduler probe is outstanding, and no conclusion depends on it.
+
+From here the constraint is the writing, not the GPU.
 
 The skeleton-recall ablation is **done** — section 7.7. When reporting it, keep
 the area metrics separate from the topological ones: the whole finding is that
