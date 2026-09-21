@@ -805,9 +805,15 @@ si trovino sul cordone. Le misure non la sostengono:
 | Misura | Valore |
 |---|---|
 | Pixel di `Node` interni alla maschera del cordone | 54,0 % |
+| Stessa misura, media per immagine (76 immagini con `Node`) | 56,3 % |
 | Bordo dei pixel di `Node` su `Cordon` | 38,7 % |
 | Bordo dei pixel di `Node` su `Cane` | 32,0 % |
 | Bordo dei pixel di `Node` su `Background` | 28,7 % |
+
+*Due modi di contare.* Il 54,0 % aggrega tutti i pixel di `Node` del dataset; il
+56,3 % è la media della stessa frazione sulle 76 immagini che contengono nodi.
+Sono entrambi corretti (ricalcolati dalle label a settembre 2026); la tesi, in
+3.2.2 e 4.7.2, riporta il secondo.
 
 Quasi metà dei nodi **non** si trova sul cordone, coerentemente con il fatto che
 un nodo è tale su qualsiasi germoglio. Il caso limite lo confermava: il campione
@@ -2174,9 +2180,8 @@ messa in coda con un'aspettativa precisa: è l'unica loss **puramente regionale*
 del gruppo — `ce`, `combined` e `focal` condividono tutte un termine di
 cross-entropy per pixel — ed è l'obiettivo più vicino alla metrica monitorata,
 dato che `mean_iou_no_bg` è una media macro per classe e una Dice per classe
-mediata allo stesso modo la approssima direttamente. Visto che il disallineamento
-fra obiettivo e metrica era la spiegazione del risultato sui pesi di classe, ci
-si attendeva che allinearli ulteriormente aiutasse.
+mediata allo stesso modo la approssima direttamente. Ottimizzare direttamente
+ciò che si misura, quindi, avrebbe dovuto aiutare.
 
 **Non aiuta: è la peggiore delle quattro.** `UNet`, senza pesi, seed 42.
 
@@ -2208,9 +2213,8 @@ dove le strutture sono più sottili.
 
 L'ipotesi dell'allineamento obiettivo-metrica era quindi sbagliata come
 previsione: avvicinare la loss alla metrica non basta se la forma del gradiente
-che ne risulta è inadatta al problema. Resta valida come spiegazione del
-risultato sui pesi di classe, che riguardava una **doppia** correzione dello
-stesso sbilanciamento, non la forma dell'obiettivo.
+che ne risulta è inadatta al problema. (La spiegazione del risultato sui pesi di
+classe è stata rivista: vedi la correzione nella sezione seguente.)
 
 *Copertura della dimensione loss — limite dichiarato.* Il confronto fra le
 quattro loss è su **`UNet` soltanto**, e a un solo seed per quelle diverse da
@@ -2247,15 +2251,34 @@ tralci, che è il difetto noto fin dall'inizio.
 
 **`Node`, la classe che i pesi esistevano per proteggere, non ne trae
 beneficio** (p = 0,20). I pesi ne spostano solo il compromesso interno: recall
-da 0,52 a 0,57, precisione da 0,75 a 0,63. Si pagano tre classi su quattro per
+da 0,561 a 0,695, precisione da 0,667 a 0,570 (medie sui tre seed, dal CSV). Si pagano tre classi su quattro per
 riequilibrare la quarta senza migliorarla.
 
-*Meccanismo, ed è lo stesso della Focal.* `mean_iou_no_bg` è una media **macro**:
-le quattro classi in primo piano pesano uguale a prescindere dalla frequenza,
-quindi **la metrica bilancia già le classi**. Aggiungere `sqrt_inverse` nella
-loss — `Node` ×17,7 — le bilancia una seconda volta, nella stessa direzione. È
-la doppia correzione già vista fra γ e α nella Focal; la Focal pesata era la
-peggiore di tutte perché ne accumulava tre.
+*Meccanismo.* Alzare il peso di una classe abbassa la soglia oltre la quale la
+rete la predice, quindi la predice più spesso. Lo spostamento c'è su tutte e
+quattro le classi, non solo in media: con i pesi il recall sale di 0,048 su
+`Cane`, 0,040 su `Cordon`, 0,134 su `Node` e 0,093 su `Other`, e la precisione
+scende di 0,082, 0,066, 0,097 e 0,156. La IoU conta un falso positivo
+esattamente come un falso negativo, quindi muoversi lungo il compromesso
+recall−precisione senza migliorare la discriminazione è una perdita netta.
+`Node` lo mostra isolato: con peso ×17,7 viene trovata più spesso e creduta
+meno, e la sua IoU non si muove.
+
+*Correzione (settembre 2026).* Una versione precedente di questa nota
+attribuiva il danno alla metrica: `mean_iou_no_bg`, essendo una media macro,
+«bilancerebbe già le classi» e i pesi le bilancerebbero «una seconda volta».
+L'argomento non regge. La metrica non entra nel gradiente e non può sommarsi ai
+pesi: al più spiega perché non ci fosse nulla da guadagnare, non perché ci sia
+un danno. Né la media macro rende il danno più visibile: pesando le variazioni
+per classe con la frequenza dei pixel di primo piano (`Cane` 0,695, `Cordon`
+0,225, `Other` 0,063, `Node` 0,017) il costo dei pesi sarebbe −0,0306, più del
+−0,0232 della media macro, perché la classe che perde di più in assoluto è
+`Cane`, la più frequente. La tesi riporta solo il meccanismo
+recall/precisione.
+
+*La Focal pesata* era la peggiore per una ragione diversa, tutta interna alla
+loss: il fattore γ e i pesi, che fanno la parte di α, spingono nella stessa
+direzione, mentre gli autori a γ = 2 abbassano α (0,25 sulla classe rara).
 
 *Cautele.* Tre run per gruppo: il test t ha pochi gradi di libertà e i valori p
 sono approssimati. Con una correzione di Bonferroni su otto confronti
@@ -2272,12 +2295,17 @@ tutto il resto invariato. Le soglie sono quelle misurate su `UNet`.
 |---|---|---|---|---|
 | IoU media | **+0,0232** | **+0,0320** | −0,0122 | 0,0214 |
 | precisione | **+0,0781** | **+0,0813** | **+0,0333** | 0,0145 |
-| recall | **−0,0588** | **−0,0472** | **−0,0541** | 0,0184 |
-| clDice | +0,0091 | +0,0103 | **−0,0172** | 0,0149 |
+| recall | **−0,0587** | **−0,0472** | **−0,0541** | 0,0184 |
+| clDice | +0,0092 | +0,0103 | **−0,0172** | 0,0149 |
 | IoU `Cane` | **+0,0314** | **+0,0332** | −0,0027 | 0,0220 |
-| IoU `Cordon` | **+0,0249** | **+0,0255** | −0,0065 | 0,0208 |
-| IoU `Node` | −0,0200 | +0,0295 | **−0,0494** | 0,0494 |
+| IoU `Cordon` | **+0,0250** | **+0,0255** | −0,0065 | 0,0208 |
+| IoU `Node` | −0,0201 | +0,0295 | **−0,0494** | 0,0494 |
 | IoU `Other` | **+0,0563** | **+0,0397** | **+0,0097** | 0,0050 |
+
+*Arrotondamento.* La colonna `UNet` è corretta a settembre 2026: tre valori
+erano stati ottenuti sottraendo medie già arrotondate. La differenza va
+arrotondata dopo la sottrazione (recall −0,05874, clDice +0,00916, `Cordon`
++0,02499, `Node` −0,02006).
 
 `SegNet` replica `UNet` quasi punto per punto — precisione, `Cane`, `Cordon` e
 clDice cadono entro un punto percentuale dell'effetto misurato con tre seed.
@@ -2292,8 +2320,13 @@ clDice cadono entro un punto percentuale dell'effetto misurato con tre seed.
 | `SegNet` | +0,096 | −0,033 |
 | `PSPNet` | **+0,058** | −0,030 |
 
-Tutte e tre finiscono nello stesso punto, ma `PSPNet` partiva **già a metà
-strada**: è l'architettura senza convoluzioni a piena risoluzione, produce
+*Con tre seed.* I valori «senza pesi» qui sopra vengono da una run ciascuna. Con
+i tre seed del confronto definitivo (sezione seguente) diventano −0,040 per
+`SegNet` e −0,049 per `PSPNet`, e sono quelli riportati in tesi: `PSPNet` parte
+più vicina al punto di pareggio e finisce più oltre.
+
+Con una run ciascuna le tre sembrano finire nello stesso punto, ma `PSPNet`
+partiva **già a metà strada**: è l'architettura senza convoluzioni a piena risoluzione, produce
 maschere più grossolane e quindi meno falsi positivi, ed è intrinsecamente
 spostata verso la precisione (sezione 12, dove perde 0,057 di IoU su `Cane`).
 I pesi di classe ne stavano **compensando la distorsione nativa**; toglierli la
@@ -2330,9 +2363,12 @@ proteggere la classe rara non la protegge.
 
 ### Confronto definitivo fra architetture — baseline non pesata, 3 seed ciascuna
 
-Diciotto run in tutto (tre architetture × tre seed × due bracci di pesatura),
-`ce`, budget 70, batch 4, split `62de0ec4`, impronta `d90d5da1`. Questa è la
-tabella che va in tesi.
+Nove run (tre architetture × tre seed), `ce` senza pesi di classe, budget 70,
+batch 4, split `62de0ec4`, impronta `d90d5da1`. Questa è la tabella che va in
+tesi. Il braccio pesato ha tre seed solo su `UNet` (sezione «I pesi di classe
+danneggiano due architetture su tre»); su `SegNet` e `PSPNet` una run ciascuno.
+Una versione precedente di questa nota diceva «diciotto run»: il CSV ne
+contiene nove.
 
 | metrica | `UNet` | `SegNet` | `PSPNet` |
 |---|---|---|---|
@@ -2428,6 +2464,74 @@ della profondità stessa e della riflettività della superficie — informazione
 presente nei tre canali di depth colorizzata e nell'intensità. L'ipotesi di
 ridondanza era stata formulata all'inizio del progetto; i dati la confermano.
 
+### Il meccanismo, misurato sui file di configurazione della camera
+
+L'interpretazione qui sopra era un'ipotesi plausibile. I file
+`*-device_settings.pfs` salvati accanto a ogni acquisizione la rendono
+verificabile, e il meccanismo risulta più forte di quanto supposto.
+
+**143 file `.pfs`, tutti i parametri identici.** Fra le quattro uscite non varia
+nulla: `Width 640`, `Height 480`, `DepthMin 300`, `DepthMax 2200` (mm),
+`ExposureTime 500` (µs), `OperatingMode LongRange`, `HDRMode 0`,
+`ConfidenceThreshold 320`, `Scan3dInvalidDataValue 0`, più i filtri di bordo
+(`SpatialFilter`, `TemporalFilter` a forza 200, `OutlierRemoval`,
+`AmbiguityFilter`, `ImageInpainting`, `DistortionCorrection`,
+`ThermalDriftCorrection`, `GammaCorrection`) tutti attivi. Il dataset è quindi
+acquisito a impostazioni costanti: una variabile in meno da dichiarare come
+possibile confondente.
+
+Il parametro decisivo è `ConfidenceThreshold 320` con
+`Scan3dInvalidDataValue 0`. **La camera usa già la confidence, a monte**: i
+pixel sotto soglia vengono invalidati e scritti a zero nella depth map. Quando i
+dati arrivano alla rete, la parte azionabile dell'informazione di confidence è
+già stata applicata.
+
+Misure sulle 100 immagini del dataset:
+
+| | valore |
+|---|---|
+| pixel senza depth valida (= 0) | **48,4 %** (min 26,2 %, max 75,1 %) |
+| accordo fra la maschera degli zeri di depth e quella di confidence | **99,979 %** |
+| corr(confidence, intensity) sui pixel validi | **0,949** (min 0,930) |
+
+Le tre righe chiudono la questione. Quasi metà del frame non ha profondità
+valida, e la maschera di quei pixel è **la stessa** in depth e in confidence a
+due parti su diecimila: la rete può leggere il criterio di invalidazione dal
+canale depth, gratis, senza il canale di confidence. Ciò che resta della
+confidence sui pixel validi è spiegato al 95 % dalla sola intensity — coerente
+con il fatto che l'affidabilità di una misura di fase dipende da quanta luce
+modulata è tornata, che è esattamente ciò che l'intensity riporta.
+
+### Il 48,4 % di pixel invalidi non è un difetto: è il range che lavora
+
+Va scritto con attenzione, perché il numero da solo suggerisce una misura
+scadente. Non lo è: `DepthMin 300` / `DepthMax 2200` sono stati impostati in
+modo che il filare cada dentro la finestra e il terreno dietro no. Incrociando
+la maschera degli invalidi con le label maps multiclasse (n = 100):
+
+| | valore |
+|---|---|
+| dei pixel **senza depth**, quanti sono background | **96,3 %** (min 89,5 %) |
+| dei pixel **di vite**, quanti hanno depth valida | **89,4 %** (min 77,5 %) |
+| del background, quanto viene invalidato | 56,3 % |
+
+Il canale depth arriva quindi con una **maschera di foreground approssimata già
+dentro**, ottenuta da un'impostazione della camera e non da un modello appreso.
+È il motivo per cui depth è la modalità più informativa delle tre.
+
+*Ricaduta sul progetto futuro.* Qui il problema dei filari adiacenti è stato
+risolto **evitandolo**, inquadrando dall'alto. Ma la finestra di profondità è
+una via indipendente per lo stesso risultato: in un'acquisizione orizzontale i
+filari vicini sono oggetti confondibili **a distanza maggiore**, quindi un
+`DepthMax` tarato sulla larghezza di un filare li esclude a livello di sensore,
+prima che il pixel venga scritto. È il meccanismo che renderebbe praticabile
+l'acquisizione laterale richiesta dalla triangolazione, senza toccare il
+modello.
+
+Il risultato sperimentale (zero differenze su ventiquattro confronti) e il
+meccanismo ora concordano, e il secondo è misurato sui dati e sui file della
+camera, non argomentato.
+
 *Ricaduta pratica.* Un canale in meno da acquisire, trasmettere e archiviare, e
 un addestramento dall'8 al 12 % più rapido, a parità di risultato su ogni
 metrica e su ogni architettura. Nota però che questo riguarda **l'uso del
@@ -2480,6 +2584,71 @@ della tesi, dato che ogni confronto è relativo e interno a un optimizer fisso.
 canali, con `best entro 70 = 0,5945`; la run valida, a cinque canali, dà
 **0,5947**. Due parti su diecimila. Non era programmata, ed è una conferma
 ulteriore e non cercata del risultato della sezione 13.
+
+---
+
+## 15. Due sonde a convergenza (7 settembre)
+
+Nate da un difetto trovato rileggendo il capitolo 4 con tutte le `history.json`
+scaricate in locale. Il capitolo affermava che il criterio della pendenza
+«scatta esattamente una volta». **È falso**: calcolando la pendenza delle ultime
+dieci epoche su tutte e 32 le run, ne superano l'inviluppo della configurazione
+di riferimento (+1,47 … +3,27) quattro — SegNet a 4 canali (+4,55), due delle
+tre run SRL (+4,36 e +4,03) e SGD (+3,38).
+
+Il caso che contava era la SRL: **il braccio con la loss saliva ancora più in
+fretta della baseline** a fine budget, media +3,86 contro +2,28, Welch p = 0,076.
+Parte del deficit misurato poteva quindi essere distanza dalla convergenza e non
+una proprietà dell'obiettivo. Due run l'hanno chiuso.
+
+### 15.1 Il budget costa più di quanto dicevamo
+
+`20260907_1728_UNet-custom_ce_adamw_noweight-budget200`, cioè la sonda del
+budget rifatta sulla configurazione **non pesata**, quella effettivamente
+adottata. Fermata dall'early stopping a 121 epoche, massimo alla 101.
+
+| configurazione | entro 70 | a convergenza | scarto | catturato |
+|---|---|---|---|---|
+| pesata (sonda di agosto) | 0,6501 | 0,6625 | +0,0124 | 98,1 % |
+| **non pesata** | 0,6761 | **0,7008** | **+0,0247** | 96,5 % |
+
+Il doppio, e **sopra la soglia di rumore di 0,021**. L'affermazione «raddoppiare
+il tempo rende meno del rumore» valeva per la configurazione pesata, non per
+quella di riferimento. In tesi ora c'è una tabella con entrambe e la formulazione
+corretta: il budget costa **circa una soglia di rumore**.
+
+*Ricaduta positiva.* La stessa run rende superflua l'estrapolazione della
+sezione 14: AdamW a convergenza non è più stimato ma misurato a **0,7008**, e il
+divario con SGD passa da 0,059 stimato a **0,081 misurato**.
+
+*Una seconda replica involontaria.* Questa run ripete configurazione **e seed**
+di `20260824_1738` e dà 0,6761 entro le 70 epoche dove l'originale dava 0,6709.
+**Cinque millesimi a parità di seed**, dovuti solo a kernel non deterministici e
+ordine dei worker — lo stesso ordine della σ = 0,0075 misurata fra seed diversi.
+
+### 15.2 La SRL regge a convergenza
+
+`20260907_1849_UNet-custom_ce_adamw_noweight-skel-budget200`, identica alla
+precedente salvo `skeleton_loss.enabled = True`. Fermata a 153 epoche, massimo
+alla 133.
+
+| | entro 70 | a convergenza | best epoch |
+|---|---|---|---|
+| senza SRL | 0,6761 | 0,7008 | 101 |
+| con SRL | 0,6323 | 0,6684 | 133 |
+| **differenza** | **−0,0438** | **−0,0324** | |
+
+Il dubbio era fondato — il braccio con la loss ha davvero richiesto 133 epoche
+contro 101 — ma **non decisivo**. Il deficit a 70 epoche riproduce quello a tre
+seed (−0,0438 contro −0,0431), e a convergenza resta **−0,0324**, ancora sopra
+soglia. **Circa un quarto del deficit era convergenza, gli altri tre quarti no.**
+
+Sopravvivono nella stessa forma anche lo scambio topologico — recall su `Cane`
++0,016, precisione −0,016 — e il costo su `Node` (−0,063). Le tre conclusioni
+dell'ablazione valgono quindi a convergenza e non solo a budget fisso.
+
+*Come va riportato.* Non come limitazione dichiarata ma come controllo eseguito
+e superato: è più forte della versione precedente, che si fermava al budget.
 
 ---
 
