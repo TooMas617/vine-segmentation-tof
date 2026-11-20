@@ -22,3 +22,6 @@ __pycache__/
 
 # Paper consultati per la tesi (PDF coperti da copyright: restano solo in locale)
 reference/
+
+# Istruzioni di lavoro per Claude Code (solo in locale)
+CLAUDE.md
