@@ -2690,9 +2690,11 @@ arbitrario. Vedere la sezione 4 per la ricostruzione dell'errore.
 ## Stato dell'infrastruttura
 
 **Controllo di versione.** Il codice è tracciato con Git e ospitato su un
-repository privato GitHub. I dati (`data/`), gli output degli esperimenti
+repository pubblico GitHub. I dati (`data/`), gli output degli esperimenti
 (`experiments/`, `results/`) e le impostazioni locali dell'editor sono esclusi
-dal versionamento. Gli output dei notebook vengono rimossi automaticamente al
+dal versionamento; è pubblicato solo un campione di cinque immagini grezze del
+test set, senza annotazioni, in `sample_data/`.
+Gli output dei notebook vengono rimossi automaticamente al
 momento del commit tramite `nbstripout`, per mantenere i diff leggibili.
 
 **Ambiente di esecuzione.** Ambiente conda dedicato (`vine`, Python 3.11.15),
