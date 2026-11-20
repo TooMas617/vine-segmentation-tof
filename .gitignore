@@ -20,5 +20,5 @@ __pycache__/
 # Impostazioni locali dell'editor (percorsi specifici della macchina, tipo ambiente miniconda)
 .vscode/
 
-# Notebook originale monolitico, tenuto solo come riferimento durante il refactor
+# Paper consultati per la tesi (PDF coperti da copyright: restano solo in locale)
 reference/
